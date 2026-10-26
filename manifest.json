@@ -3,7 +3,7 @@
   "name": "Editor UX Fix",
   "version": "0.1.0",
   "minAppVersion": "1.6.6",
-  "description": "Long-press a line to fold or unfold it (its parent if it has no children); click where the caret is to toggle the line; Alt+wheel (or wheel while holding the right button, on Windows) folds or unfolds the line under the mouse one level at a time, keeping the line under the mouse in place; the wheel left of the text (margin, indentation, list markers, heading #) does the same without Alt, and a click there toggles the line; header buttons step the whole document one level or fold/unfold everything.",
+  "description": "Long-press a line to fold or unfold it (its parent if it has no children); click where the caret is to toggle the line; Alt+wheel (or wheel while holding the right button, on Windows) folds or unfolds the line under the mouse one level at a time, keeping the line under the mouse in place; the wheel left of the text (margin, indentation, list markers, heading #) does the same without Alt, and a click there toggles the line; header buttons fold or unfold everything.",
   "author": "Hyunyoung Park",
   "authorUrl": "",
   "isDesktopOnly": true

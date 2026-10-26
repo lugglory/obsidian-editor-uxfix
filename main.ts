@@ -14,7 +14,7 @@ interface Settings {
 	clickToggle: boolean; // 캐럿 자리 클릭 = 그 줄 접기/펴기
 	altWheel: boolean;      // Alt+휠 = 마우스 자리의 줄을 한 단계씩 펴기/접기
 	rightWheel: boolean;    // 오른쪽 버튼을 누른 채 휠 = Alt+휠(윈도우즈)
-	headerButtons: boolean; // 편집기 위쪽 줄의 끝까지/한 단계 펴기/접기 버튼
+	headerButtons: boolean; // 편집기 위쪽 줄의 끝까지 펴기/접기 버튼
 	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠 = Alt+휠
 	leftClick: boolean;     // 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기
 }
@@ -108,7 +108,7 @@ function visibleTree(state: EditorState, roots: Range[]): Node[] {
 
 // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기/펴기.
 // Alt+휠(윈도우즈는 오른쪽 버튼을 누른 채 휠도) = 마우스 자리의 줄과 그 안을 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로). 마우스 자리의 줄은 제자리에 둔다. 자식이 없는 줄이면 아무 일도 없다.
-// 편집기 위쪽 줄의 버튼 = 문서 전체를 한 단계/끝까지 펴기/접기. 누를 수 없는 버튼은 흐리게 한다
+// 편집기 위쪽 줄의 버튼 = 문서 전체를 끝까지 펴기/접기. 누를 수 없는 버튼은 흐리게 한다
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
 	cleanup: (() => void) | null = null;
@@ -119,7 +119,7 @@ const pressFold = ViewPlugin.fromClass(class {
 	anchor: { pos: number; top: number } | null = null; // keepLine: 화면에 붙들어 둘 줄과 그 원래 높이
 	unblockMenu: (() => void) | null = null; // blockMenu가 건 것을 푼다
 	frame: number | null = null; // keepLine이 높이를 맞출 프레임
-	buttons: { md: MarkdownView; open: HTMLElement; fold: HTMLElement; openAll: HTMLElement; foldAll: HTMLElement } | null = null;
+	buttons: { md: MarkdownView; openAll: HTMLElement; foldAll: HTMLElement } | null = null;
 	refreshTimer: number | null = null;
 	decorations: DecorationSet = Decoration.none; // 호버 칠하기
 	mouse: { x: number; y: number } | null = null; // 편집기 위의 마지막 마우스 자리(버튼을 누르지 않았을 때)
@@ -145,10 +145,8 @@ const pressFold = ViewPlugin.fromClass(class {
 		const md = this.view.state.field(editorInfoField, false);
 		if (!(md instanceof MarkdownView) || (md.editor as unknown as { cm?: EditorView })?.cm !== this.view) return;
 		const foldAll = md.addAction("chevrons-down-up", "끝까지 접기", () => this.foldAll());
-		const fold = md.addAction("zoom-out", "한 단계 접기", () => this.step(childFolds(this.view.state, null), false));
-		const open = md.addAction("zoom-in", "한 단계 펴기", () => this.step(childFolds(this.view.state, null), true));
 		const openAll = md.addAction("chevrons-up-down", "끝까지 펴기", () => this.unfoldAll());
-		this.buttons = { md, open, fold, openAll, foldAll };
+		this.buttons = { md, openAll, foldAll };
 	}
 
 	// 아직 안 접힌 접을 수 있는 줄 모두(접힌 줄 안에 숨은 것도). 하나만 찾으면 되면 first
@@ -186,21 +184,18 @@ const pressFold = ViewPlugin.fromClass(class {
 		const b = this.buttons;
 		if (!b) return;
 		const show = settings.headerButtons && b.md.getMode() === "source";
-		for (const el of [b.open, b.fold, b.openAll, b.foldAll]) el.toggle(show);
+		for (const el of [b.openAll, b.foldAll]) el.toggle(show);
 		if (!show) return;
 		const { state } = this.view;
-		const nodes = visibleTree(state, childFolds(state, null));
 		const enable = (el: HTMLElement, on: boolean) => {
 			el.toggleClass("is-disabled", !on);
 			el.setAttr("aria-disabled", String(!on));
 			el.style.opacity = on ? "" : "0.3";
 			el.style.cursor = on ? "" : "default";
 		};
-		enable(b.open, nodes.some(n => n.folded));
-		enable(b.fold, nodes.some(n => !n.folded));
 		enable(b.openAll, foldedRanges(state).size > 0);
 		// 보이는 줄이 다 접혀 있어도 그 안에 안 접힌 줄이 남아 있으면 누를 수 있다
-		enable(b.foldAll, b.fold.getAttr("aria-disabled") === "false" || this.unfoldedAll(true).length > 0);
+		enable(b.foldAll, this.unfoldedAll(true).length > 0);
 	};
 
 	cancel() {
@@ -493,7 +488,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (this.frame !== null) (this.view.dom.ownerDocument.defaultView || window).cancelAnimationFrame(this.frame);
 		if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
 		refreshers.delete(this.refresh);
-		if (this.buttons) for (const el of [this.buttons.open, this.buttons.fold, this.buttons.openAll, this.buttons.foldAll]) el.remove();
+		if (this.buttons) for (const el of [this.buttons.openAll, this.buttons.foldAll]) el.remove();
 		this.view.scrollDOM.removeEventListener("wheel", this.onWheel);
 		this.view.scrollDOM.removeEventListener("mousedown", this.onDown, true);
 		this.view.scrollDOM.removeEventListener("mousemove", this.onHoverMove);
@@ -535,7 +530,7 @@ class SettingTab extends PluginSettingTab {
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
 		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다.");
 		if (Platform.isWin) toggle("rightWheel", "오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기", "오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다.");
-		toggle("headerButtons", "위쪽 줄에 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 끝까지 펴기, 한 단계 펴기, 한 단계 접기, 끝까지 접기 버튼을 둔다. 누를 수 없는 버튼은 흐리게 한다.");
+		toggle("headerButtons", "위쪽 줄에 끝까지 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 끝까지 펴기, 끝까지 접기 버튼을 둔다. 누를 수 없는 버튼은 흐리게 한다.");
 		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 그 동안 그곳에서는 휠로 스크롤되지 않는다.");
 		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄을 접거나 편다(자식이 없는 줄이면 캐럿만 옮겨진다). 누른 채 움직이면 보통 드래그 선택이다.");
 	}
