@@ -196,18 +196,28 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (Math.abs(this.wheelAcc) < WHEEL_STEP) return;
 		const open = this.wheelAcc < 0; // 위로 = 펴기
 		this.wheelAcc = 0;
-		// 그 줄이 이미 다 펴졌거나 다 접혔으면(또는 대상이 없으면) 문서 전체를 한 단계(Alt+Shift+휠이 켜져 있을 때)
-		const wholeStep = () => (whole || settings.altShiftWheel) && this.step(childFolds(this.view.state, null), open);
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
-		if (pos === null) { wholeStep(); return; }
+		if (pos === null) { this.step(childFolds(this.view.state, null), open); return; }
 		this.keepLine(pos, () => {
-			if (whole) { wholeStep(); return; }
-			// 그 줄(자식이 없으면 부모)과 그 자손
 			const { state } = this.view;
-			const own = ownFold(state, pos) || parentFold(state, pos);
-			if (!(own && this.step([own], open))) wholeStep();
+			if (whole) { this.step(childFolds(state, null), open); return; }
+			// 그 줄(자식이 없으면 부모)부터
+			this.climb(ownFold(state, pos) || parentFold(state, pos), open);
 		});
 	};
+
+	// t와 그 자손을 한 단계. 바꿀 것이 없으면 t의 형제들, 그다음 부모, 부모의 형제들… 순으로 올라가며
+	// 처음으로 바뀌는 곳에서 한 단계. 맨 위의 형제들은 문서 전체다
+	climb(t: Range | null, open: boolean) {
+		const { state } = this.view;
+		while (t) {
+			if (this.step([t], open)) return;
+			const parent = parentFold(state, t.from);
+			if (this.step(childFolds(state, parent), open)) return;
+			t = parent;
+		}
+		this.step(childFolds(state, null), open);
+	}
 
 	// roots를 지금 상태에서 한 단계: 펴기는 보이는 접힌 줄 중 가장 얕은 깊이를 모두 펴고,
 	// 접기는 보이는 펼친 줄 중 가장 깊은 깊이를 모두 접는다(마지막엔 roots가 접힌다). 바꿀 것이 없으면 false
@@ -315,7 +325,7 @@ class SettingTab extends PluginSettingTab {
 				.onChange(async v => { settings[key] = v; await this.plugin.saveSettings(); }));
 		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.4초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다.");
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
-		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 그 부모가 대상이다. 그 줄이 이미 다 펴졌거나 다 접혔으면 문서 전체를 한 단계 움직인다(Alt+Shift+휠이 켜져 있을 때).");
+		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 그 부모가 대상이다. 그 줄에서 더 펴거나 접을 게 없으면 형제들, 그다음 부모, 부모의 형제들… 순으로 넘어간다.");
 		toggle("altShiftWheel", "Alt+Shift+휠로 문서 전체 단계별 접기/펴기", "Alt와 Shift를 누른 채 휠을 굴리면 마우스 위치와 상관없이 문서 전체를 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로).");
 	}
 }
