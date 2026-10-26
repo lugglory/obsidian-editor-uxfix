@@ -3,7 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
 
-const LONG_PRESS = 500; // 꾹 누르기 ms
+const LONG_PRESS = 400; // 꾹 누르기 ms
 const MOVE_SLOP = 4;    // 이만큼 넘게 움직이면 꾹 누르기가 아니다(드래그 선택)
 const SCAN_UP = 2000;   // 부모를 찾아 위로 훑는 줄 수
 const WHEEL_STEP = 100; // Alt+휠 한 단계로 치는 스크롤 양(px). 마우스 휠 한 칸이 보통 100, 터치패드는 잘게 나눠 온다
@@ -11,10 +11,11 @@ const WHEEL_STEP = 100; // Alt+휠 한 단계로 치는 스크롤 양(px). 마�
 interface Settings {
 	longPress: boolean;   // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기)
 	clickToggle: boolean; // 캐럿 자리 클릭 = 그 줄 접기/펴기
-	altWheel: boolean;    // Alt+휠 = 문서 전체를 한 단계씩 펴기/접기
+	altWheel: boolean;      // Alt+휠 = 마우스 자리의 줄을 한 단계씩 펴기/접기
+	altShiftWheel: boolean; // Alt+Shift+휠 = 문서 전체를 한 단계씩 펴기/접기
 }
 
-const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, altWheel: true };
+const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, altWheel: true, altShiftWheel: true };
 
 // 편집기 확장들이 이벤트 때마다 읽는다: 설정을 바꾸면 바로 적용된다
 const settings: Settings = { ...DEFAULT_SETTINGS };
@@ -71,8 +72,8 @@ function childFolds(state: EditorState, parent: Range | null): Range[] {
 
 type Node = { range: Range; depth: number; folded: boolean };
 
-// 문서에서 화면에 보이는 접을 수 있는 줄들(최상단 = 깊이 0). 접힌 줄의 안은 보이지 않으니 넣지 않는다
-function visibleTree(state: EditorState): Node[] {
+// roots와 그 자손 중 화면에 보이는 접을 수 있는 줄들(roots = 깊이 0). 접힌 줄의 안은 보이지 않으니 넣지 않는다
+function visibleTree(state: EditorState, roots: Range[]): Node[] {
 	const out: Node[] = [];
 	const walk = (ranges: Range[], depth: number) => {
 		for (const r of ranges) {
@@ -82,18 +83,19 @@ function visibleTree(state: EditorState): Node[] {
 			if (!folded) walk(childFolds(state, r), depth + 1);
 		}
 	};
-	walk(childFolds(state, null), 0);
+	walk(roots, 0);
 	return out;
 }
 
 // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기/펴기.
-// Alt+휠 = 문서 전체를 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로)
+// Alt+휠 = 마우스 자리의 줄을, Alt+Shift+휠 = 문서 전체를 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로)
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
 	cleanup: (() => void) | null = null;
 	release: (() => void) | null = null; // 꾹 누르기 뒤 holdUntilRelease가 건 것을 푼다
 	win: Window = window; // 편집기가 있는 창(분리 창일 수 있다). 타이머도 이 창에 건다
 	wheelAcc = 0;         // 아직 한 단계가 안 된 Alt+휠 양
+	anchor: { pos: number; top: number } | null = null; // keepLine: 화면에 붙들어 둘 줄과 그 원래 높이
 
 	constructor(readonly view: EditorView) {
 		// 스크롤을 막아야 하니 passive가 아니게 직접 건다
@@ -181,23 +183,33 @@ const pressFold = ViewPlugin.fromClass(class {
 	}
 
 	onWheel = (e: WheelEvent) => {
-		if (!settings.altWheel || !e.altKey || e.ctrlKey || e.shiftKey || e.metaKey) return;
+		if (!e.altKey || e.ctrlKey || e.metaKey) return;
+		const whole = e.shiftKey;
+		if (whole ? !settings.altShiftWheel : !settings.altWheel) return;
 		e.preventDefault();
-		const delta = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+		// Shift를 누르면 브라우저가 가로 스크롤로 바꿔 deltaX로 보낸다
+		const raw = e.deltaY !== 0 ? e.deltaY : e.deltaX;
+		const delta = e.deltaMode === 1 ? raw * 40 : e.deltaMode === 2 ? raw * 800 : raw;
 		// 방향이 바뀌면 쌓인 양을 버린다
 		if (Math.sign(delta) !== Math.sign(this.wheelAcc)) this.wheelAcc = 0;
 		this.wheelAcc += delta;
 		if (Math.abs(this.wheelAcc) < WHEEL_STEP) return;
 		const open = this.wheelAcc < 0; // 위로 = 펴기
 		this.wheelAcc = 0;
-		this.step(open);
+		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
+		if (pos === null) { if (whole) this.step(childFolds(this.view.state, null), open); return; }
+		this.keepLine(pos, () => {
+			const { state } = this.view;
+			// 그 줄(자식이 없으면 부모)과 그 자손, 또는 문서 전체
+			const own = ownFold(state, pos) || parentFold(state, pos);
+			this.step(whole ? childFolds(state, null) : own ? [own] : [], open);
+		});
 	};
 
-	// 문서 전체를 지금 상태에서 한 단계: 펴기는 보이는 접힌 줄 중 가장 얕은 깊이를 모두 펴고,
-	// 접기는 보이는 펼친 줄 중 가장 깊은 깊이를 모두 접는다(마지막엔 최상단 줄들이 접힌다)
-	step(open: boolean) {
-		const { state } = this.view;
-		const nodes = visibleTree(state).filter(n => n.folded === open);
+	// roots를 지금 상태에서 한 단계: 펴기는 보이는 접힌 줄 중 가장 얕은 깊이를 모두 펴고,
+	// 접기는 보이는 펼친 줄 중 가장 깊은 깊이를 모두 접는다(마지막엔 roots가 접힌다)
+	step(roots: Range[], open: boolean) {
+		const nodes = visibleTree(this.view.state, roots).filter(n => n.folded === open);
 		if (!nodes.length) return;
 		const depth = nodes.reduce((d, n) => open ? Math.min(d, n.depth) : Math.max(d, n.depth), nodes[0].depth);
 		const ranges = nodes.filter(n => n.depth === depth).map(n => n.range);
@@ -207,13 +219,37 @@ const pressFold = ViewPlugin.fromClass(class {
 
 	// 접혀 있으면 편다. 아니면 그 줄을 접고, 자식이 없으면 parentIfLeaf일 때 부모를 접는다
 	toggle(pos: number, parentIfLeaf: boolean) {
-		const { state } = this.view;
-		if (pos > state.doc.length) return;
-		const line = visibleLine(state, pos);
-		const folded = foldedOn(state, line.from, line.to);
-		if (folded) { this.unfold(folded); return; }
-		const r = ownFold(state, pos) || (parentIfLeaf ? parentFold(state, pos) : null);
-		if (r) this.foldRanges([r]);
+		if (pos > this.view.state.doc.length) return;
+		this.keepLine(pos, () => {
+			const { state } = this.view;
+			const line = visibleLine(state, pos);
+			const folded = foldedOn(state, line.from, line.to);
+			if (folded) { this.unfold(folded); return; }
+			const r = ownFold(state, pos) || (parentIfLeaf ? parentFold(state, pos) : null);
+			if (r) this.foldRanges([r]);
+		});
+	}
+
+	// change로 접고 편 뒤에도 pos의 줄이(접혀 숨으면 그 줄을 품은 접힌 줄이) 화면에서 같은 높이에 있게 스크롤한다.
+	// 높이는 CodeMirror가 새 배치를 잰 뒤에 다시 재서 맞춘다. 재기 전에 여러 번 오면(빠른 휠) 처음 높이에 맞춘다
+	keepLine(pos: number, change: () => void) {
+		const { view } = this;
+		if (!this.anchor) {
+			const c = view.coordsAtPos(visibleLine(view.state, pos).from);
+			if (c) this.anchor = { pos, top: c.top };
+		}
+		change();
+		if (!this.anchor) return;
+		view.requestMeasure({
+			key: this,
+			read: v => {
+				const a = this.anchor;
+				this.anchor = null;
+				const c = a && a.pos <= v.state.doc.length ? v.coordsAtPos(visibleLine(v.state, a.pos).from) : null;
+				return a && c ? c.top - a.top : 0;
+			},
+			write: (d, v) => { if (d) v.scrollDOM.scrollTop += d; },
+		});
 	}
 
 	// 캐럿이 접히는 안쪽에 남으면 CodeMirror가 다음 캐럿 이동 때 그 접기를 풀어 버린다: 접은 줄 끝으로 뺀다
@@ -271,8 +307,9 @@ class SettingTab extends PluginSettingTab {
 			new Setting(containerEl).setName(name).setDesc(desc).addToggle(t => t
 				.setValue(settings[key])
 				.onChange(async v => { settings[key] = v; await this.plugin.saveSettings(); }));
-		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.5초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다.");
+		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.4초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다.");
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
-		toggle("altWheel", "Alt+휠로 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스 위치와 상관없이 문서 전체를 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로).");
+		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 그 부모가 대상이다.");
+		toggle("altShiftWheel", "Alt+Shift+휠로 문서 전체 단계별 접기/펴기", "Alt와 Shift를 누른 채 휠을 굴리면 마우스 위치와 상관없이 문서 전체를 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로).");
 	}
 }
