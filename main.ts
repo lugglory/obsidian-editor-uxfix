@@ -4,6 +4,7 @@ import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
 
 const LONG_PRESS = 400; // 꾹 누르기 ms
+const GAUGE_DELAY = 120; // 꾹 누르기 게이지를 띄우기까지 ms(짧은 클릭에는 안 보이게)
 const MOVE_SLOP = 4;    // 이만큼 넘게 움직이면 꾹 누르기가 아니다(드래그 선택)
 const SCAN_UP = 2000;   // 부모를 찾아 위로 훑는 줄 수
 const WHEEL_STEP = 100; // 휠 한 단계로 치는 스크롤 양(px). 마우스 휠 한 칸이 보통 100, 터치패드는 잘게 나눠 온다
@@ -121,6 +122,8 @@ const pressFold = ViewPlugin.fromClass(class {
 	frame: number | null = null; // keepLine이 높이를 맞출 프레임
 	buttons: { md: MarkdownView; openAll: HTMLElement; foldAll: HTMLElement } | null = null;
 	refreshTimer: number | null = null;
+	gauge: HTMLElement | null = null; // 꾹 누르기 게이지
+	gaugeTimer: number | null = null;
 	decorations: DecorationSet = Decoration.none; // 호버 칠하기
 	mouse: { x: number; y: number } | null = null; // 편집기 위의 마지막 마우스 자리(버튼을 누르지 않았을 때)
 	hoverFrame: number | null = null;
@@ -202,6 +205,43 @@ const pressFold = ViewPlugin.fromClass(class {
 	cancel() {
 		if (this.timer !== null) { this.win.clearTimeout(this.timer); this.timer = null; }
 		if (this.cleanup) { this.cleanup(); this.cleanup = null; }
+		this.stopGauge();
+	}
+
+	// 꾹 누르기가 차오르는 원형 게이지를 마우스 오른쪽 아래에 띄운다. 짧은 클릭에는 안 보이게 조금 뒤에, 그만큼 찬 채로 띄운다
+	startGauge(win: Window, x: number, y: number) {
+		this.gaugeTimer = win.setTimeout(() => {
+			this.gaugeTimer = null;
+			const doc = win.document, ns = "http://www.w3.org/2000/svg";
+			const C = 2 * Math.PI * 7; // 원 둘레
+			const el = doc.createElement("div");
+			el.style.cssText = `position:fixed;left:${x + 14}px;top:${y + 14}px;width:18px;height:18px;pointer-events:none;z-index:10000`;
+			const svg = doc.createElementNS(ns, "svg");
+			svg.setAttribute("width", "18");
+			svg.setAttribute("height", "18");
+			const circle = (stroke: string) => {
+				const c = doc.createElementNS(ns, "circle");
+				for (const [k, v] of [["cx", "9"], ["cy", "9"], ["r", "7"], ["fill", "none"], ["stroke-width", "2.5"], ["transform", "rotate(-90 9 9)"]]) c.setAttribute(k, v);
+				c.style.stroke = stroke;
+				svg.appendChild(c);
+				return c;
+			};
+			circle("var(--background-modifier-border)");
+			const bar = circle("var(--interactive-accent)");
+			bar.style.strokeDasharray = `${C}`;
+			bar.style.strokeDashoffset = `${C * (1 - GAUGE_DELAY / LONG_PRESS)}`;
+			el.appendChild(svg);
+			doc.body.appendChild(el);
+			this.gauge = el;
+			el.getBoundingClientRect(); // 시작 모양을 그려 둔 뒤에 바꿔야 차오르는 transition이 돈다
+			bar.style.transition = `stroke-dashoffset ${LONG_PRESS - GAUGE_DELAY}ms linear`;
+			bar.style.strokeDashoffset = "0";
+		}, GAUGE_DELAY);
+	}
+
+	stopGauge() {
+		if (this.gaugeTimer !== null) { this.win.clearTimeout(this.gaugeTimer); this.gaugeTimer = null; }
+		if (this.gauge) { this.gauge.remove(); this.gauge = null; }
 	}
 
 	update(u: ViewUpdate) {
@@ -293,15 +333,24 @@ const pressFold = ViewPlugin.fromClass(class {
 		// 접기 화살표, 체크박스 같은 위젯은 제 동작에 맡긴다
 		if (target.closest(".cm-foldGutter, .collapse-indicator, .cm-fold-indicator, .cm-foldPlaceholder, input, button")) return;
 		// 글 왼쪽 클릭 = 접기 꺾쇠 단추처럼 그 높이의 줄 접기/펴기만(자식이 없으면 아무 일도 없다).
+		// 글 왼쪽 꾹 누르기 = 그 줄의 부모 접기(부모가 없으면 그 줄).
 		// CodeMirror에 넘기지 않으니 캐럿도 포커스도 그대로고, 드래그 선택도 시작되지 않는다. 움직였다 떼면 아무 일도 없다
 		const local = settings.leftClick ? this.leftRange(e.clientX, e.clientY) : null;
 		if (local) {
 			e.preventDefault();
 			e.stopPropagation();
+			if (e.detail !== 1) return; // 더블클릭의 두 번째는 다시 토글하지 않는다
 			const range = local.range;
-			if (!range || e.detail !== 1) return; // 더블클릭의 두 번째는 다시 토글하지 않는다
 			const win = this.win = this.view.dom.ownerDocument.defaultView || window;
-			this.track(win, e, () => this.toggleRange(local.pos, range));
+			this.track(win, e, () => { if (range) this.toggleRange(local.pos, range); });
+			if (!settings.longPress) return;
+			this.timer = win.setTimeout(() => {
+				this.timer = null;
+				this.cancel();
+				this.holdUntilRelease(win);
+				this.foldUp(local.pos);
+			}, LONG_PRESS);
+			this.startGauge(win, e.clientX, e.clientY);
 			return;
 		}
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
@@ -321,6 +370,7 @@ const pressFold = ViewPlugin.fromClass(class {
 			this.holdUntilRelease(win);
 			this.toggle(pos, true);
 		}, LONG_PRESS);
+		this.startGauge(win, e.clientX, e.clientY);
 	}
 
 	onScroll = () => this.cancel();
@@ -440,6 +490,16 @@ const pressFold = ViewPlugin.fromClass(class {
 		});
 	}
 
+	// 그 줄의 부모를 접는다. 부모가 없으면(맨 바깥 줄) 그 줄을 접는다(이미 접혀 있으면 그대로)
+	foldUp(pos: number) {
+		if (pos > this.view.state.doc.length) return;
+		this.keepLine(pos, () => {
+			const { state } = this.view;
+			const r = parentFold(state, pos) || ownFold(state, pos);
+			if (r && !foldedOn(state, state.doc.lineAt(r.from).from, r.from)) this.foldRanges([r]);
+		});
+	}
+
 	// 범위 r이 접혀 있으면 펴고 아니면 접는다
 	toggleRange(pos: number, r: Range) {
 		if (pos > this.view.state.doc.length) return;
@@ -542,12 +602,12 @@ class SettingTab extends PluginSettingTab {
 			new Setting(containerEl).setName(name).setDesc(desc).addToggle(t => t
 				.setValue(settings[key])
 				.onChange(async v => { settings[key] = v; refreshAll(); await this.plugin.saveSettings(); }));
-		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.4초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다.");
+		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.4초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 꾹 누르면 자식이 있어도 부모를 접는다.");
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
 		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다.");
 		if (Platform.isWin) toggle("rightWheel", "오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기", "오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다.");
 		toggle("headerButtons", "위쪽 줄에 끝까지 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 끝까지 펴기, 끝까지 접기 버튼을 둔다. 누를 수 없는 버튼은 흐리게 한다.");
 		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 그곳에서는 휠로 스크롤되지 않는다(자식이 없는 줄이면 아무 일도 없다). 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다.");
-		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄을 접거나 편다(자식이 없는 줄이면 아무 일도 없다). 접기 꺾쇠 단추처럼 캐럿과 포커스는 그대로이고, 그곳에서는 드래그 선택과 꾹 누르기가 되지 않는다.");
+		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄을 접거나 편다(자식이 없는 줄이면 아무 일도 없다). 접기 꺾쇠 단추처럼 캐럿과 포커스는 그대로이고, 그곳에서는 드래그 선택이 되지 않는다. 그곳을 꾹 누르면(꾹 누르기 설정이 켜져 있을 때) 그 줄의 부모를 접는다(부모가 없으면 그 줄).");
 	}
 }
