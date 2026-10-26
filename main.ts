@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { App, Platform, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { Annotation, EditorState, Transaction } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
@@ -11,9 +11,10 @@ interface Settings {
 	longPress: boolean;     // 꾹 누르기 = 부모 접기
 	clickToggle: boolean;   // 캐럿 자리 클릭 = 그 줄 접기/펴기
 	unfoldOnEnter: boolean; // 캐럿이 접힌 줄로 들어가면 펴기
+	siblingFold: boolean;   // 오른쪽 꾹 누르기 = 그 줄과 형제 접기(Windows)
 }
 
-const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, unfoldOnEnter: true };
+const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, unfoldOnEnter: true, siblingFold: true };
 
 // 편집기 확장들이 이벤트 때마다 읽는다: 설정을 바꾸면 바로 적용된다
 const settings: Settings = { ...DEFAULT_SETTINGS };
@@ -56,7 +57,34 @@ function parentFold(state: EditorState, pos: number): Range | null {
 	return null;
 }
 
-// 꾹 누르기 = 부모 접기(최상단이면 그 줄). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기.
+// 목록 항목이면 들여쓰기, 제목이면 수준: 형제를 가르는 기준
+function lineKind(text: string): string | null {
+	const h = /^(#{1,6})\s/.exec(text);
+	if (h) return "h" + h[1].length;
+	const li = /^(\s*)([-*+]|\d+[.)])\s/.exec(text);
+	return li ? "li" + li[1] : null;
+}
+
+// 그 줄과 형제(같은 부모 아래 같은 수준의 목록 항목이나 제목) 중 접을 수 있는 범위들. 부모가 없으면 문서 전체에서
+function siblingFolds(state: EditorState, pos: number): Range[] {
+	const kind = lineKind(visibleLine(state, pos).text);
+	if (!kind) return [];
+	const parent = parentFold(state, pos);
+	const end = parent ? parent.to : state.doc.length;
+	const out: Range[] = [];
+	for (let n = parent ? state.doc.lineAt(parent.from).number + 1 : 1; n <= state.doc.lines;) {
+		const l = state.doc.line(n);
+		if (l.from > end) break;
+		const r = foldable(state, l.from, l.to);
+		if (r && lineKind(l.text) === kind) out.push(r);
+		// 접히는 줄은 그 안(자식)을 건너뛴다: 훑는 줄은 모두 부모 바로 아래 줄이다
+		n = r ? state.doc.lineAt(r.to).number + 1 : n + 1;
+	}
+	return out;
+}
+
+// 꾹 누르기 = 부모 접기(최상단이면 그 줄). 오른쪽 꾹 누르기(Windows) = 그 줄과 형제 접기.
+// 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기.
 // 접힌 줄을 짧게 클릭하면 편다(캐럿이 들어가며 unfoldOnEnter가 이미 폈으면 그대로).
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
@@ -74,12 +102,33 @@ const pressFold = ViewPlugin.fromClass(class {
 	// 누르는 사이 문서가 바뀌면(동기화 등) 잰 자리가 틀리니 그만둔다
 	update(u: ViewUpdate) { if (u.docChanged) this.cancel(); }
 
+	// 누르는 동안: 움직이거나, 스크롤하거나, 창을 벗어나면(Alt+Tab 등: 떼는 신호를 못 받을 수 있다)
+	// 꾹 누르기로 치지 않는다. 그 전에 떼면 onUp
+	track(win: Window, e: MouseEvent, onUp: () => void) {
+		const x = e.clientX, y = e.clientY;
+		const onMove = (m: MouseEvent) => { if (Math.abs(m.clientX - x) > MOVE_SLOP || Math.abs(m.clientY - y) > MOVE_SLOP) this.cancel(); };
+		const up = () => { this.cancel(); onUp(); };
+		const onBlur = () => this.cancel();
+		win.addEventListener("mousemove", onMove, true);
+		win.addEventListener("mouseup", up, true);
+		win.addEventListener("blur", onBlur);
+		this.view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
+		this.cleanup = () => {
+			win.removeEventListener("mousemove", onMove, true);
+			win.removeEventListener("mouseup", up, true);
+			win.removeEventListener("blur", onBlur);
+			this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
+		};
+	}
+
 	start(e: MouseEvent) {
 		this.cancel();
-		if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+		if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
 		const target = e.target as HTMLElement;
 		// 접기 화살표, 체크박스 같은 위젯은 제 동작에 맡긴다
 		if (target.closest(".cm-foldGutter, .collapse-indicator, .cm-fold-indicator, .cm-foldPlaceholder, input, button")) return;
+		if (e.button === 2) { if (Platform.isWin && settings.siblingFold) this.startRight(e); return; }
+		if (e.button !== 0) return;
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
 		if (pos === null) return;
 		const { state } = this.view;
@@ -94,28 +143,13 @@ const pressFold = ViewPlugin.fromClass(class {
 		const sel = state.selection.main;
 		const inPlace = settings.clickToggle && this.view.hasFocus && sel.empty && sel.head === pos && e.detail === 1;
 		if (!settings.longPress && !inPlace && !atFoldEnd) return;
-		const x = e.clientX, y = e.clientY;
 		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
-		const onMove = (m: MouseEvent) => { if (Math.abs(m.clientX - x) > MOVE_SLOP || Math.abs(m.clientY - y) > MOVE_SLOP) this.cancel(); };
 		// 여기까지 오면 움직이지 않고 뗀 것이다(움직이거나 꾹 누르기가 되면 cancel이 이 리스너를 뗀다)
-		const onUp = () => {
-			this.cancel();
+		this.track(win, e, () => {
 			// 캐럿이 그대로면 CodeMirror가 선택을 내지 않아 unfoldOnEnter도 돌지 않는다: 여기서 접거나 편다.
 			// CodeMirror가 뗄 때 선택을 다시 잡은 뒤에 한다(그 전에 자리가 바뀌면 엉뚱한 범위가 잡힌다)
 			if (inPlace || atFoldEnd) win.setTimeout(() => { if (wasFolded) this.unfold(pos); else this.fold(pos, false); }, 0);
-		};
-		// 누른 채 창을 벗어나면(Alt+Tab 등) 떼는 신호를 못 받을 수 있다: 꾹 누르기로 치지 않는다
-		const onBlur = () => this.cancel();
-		win.addEventListener("mousemove", onMove, true);
-		win.addEventListener("mouseup", onUp, true);
-		win.addEventListener("blur", onBlur);
-		this.view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
-		this.cleanup = () => {
-			win.removeEventListener("mousemove", onMove, true);
-			win.removeEventListener("mouseup", onUp, true);
-			win.removeEventListener("blur", onBlur);
-			this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
-		};
+		});
 		if (!settings.longPress) return;
 		this.timer = win.setTimeout(() => {
 			this.timer = null;
@@ -128,7 +162,35 @@ const pressFold = ViewPlugin.fromClass(class {
 		}, LONG_PRESS);
 	}
 
+	// 오른쪽 꾹 누르기 = 그 줄과 형제 접기. Windows만: 오른쪽 클릭 메뉴가 뗄 때 떠서 그 전에 잴 수 있다
+	// (macOS, Linux는 누르는 순간 뜬다). 짧게 누르면 보통 메뉴
+	startRight(e: MouseEvent) {
+		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
+		if (pos === null) return;
+		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
+		this.track(win, e, () => {});
+		this.timer = win.setTimeout(() => {
+			this.timer = null;
+			this.cancel();
+			this.swallowMenu(win);
+			this.foldSiblings(pos);
+		}, LONG_PRESS);
+	}
+
 	onScroll = () => this.cancel();
+
+	// 오른쪽 꾹 누르기가 된 뒤 뗄 때 뜨는 메뉴를 삼킨다. 메뉴 신호를 놓쳤어도 새로 누르면 푼다
+	swallowMenu(win: Window) {
+		const stop = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); off(); };
+		const off = () => {
+			win.removeEventListener("contextmenu", stop, true);
+			win.removeEventListener("mousedown", off, true);
+			this.release = null;
+		};
+		win.addEventListener("contextmenu", stop, true);
+		win.addEventListener("mousedown", off, true);
+		this.release = off;
+	}
 
 	// 꾹 누르기가 된 뒤 손을 뗄 때까지: 마우스 움직임을 CodeMirror의 드래그 선택에 보내지 않고(접혀서 자리가
 	// 바뀐 문서에 엉뚱한 범위가 잡힌다), 뗄 때의 클릭도 삼킨다(링크 위였으면 열리지 않게).
@@ -168,6 +230,22 @@ const pressFold = ViewPlugin.fromClass(class {
 		this.view.dispatch({
 			effects: foldEffect.of(r),
 			selection: inside ? { anchor: r.from } : undefined,
+			annotations: ours.of(true),
+		});
+	}
+
+	// 그 줄과 형제 중 아직 안 접힌 것을 모두 접는다
+	foldSiblings(pos: number) {
+		const { state } = this.view;
+		if (pos > state.doc.length) return;
+		const ranges = siblingFolds(state, pos).filter(r => !foldedOn(state, r.from, r.from));
+		if (!ranges.length) return;
+		// 캐럿이 접히는 안쪽에 있으면 그 줄 끝으로
+		const head = state.selection.main.head;
+		const hit = ranges.find(r => head > r.from && head <= r.to);
+		this.view.dispatch({
+			effects: ranges.map(r => foldEffect.of(r)),
+			selection: hit ? { anchor: hit.from } : undefined,
 			annotations: ours.of(true),
 		});
 	}
@@ -242,5 +320,6 @@ class SettingTab extends PluginSettingTab {
 		toggle("longPress", "꾹 누르기로 부모 접기", "줄을 0.5초 누르면 그 줄을 품은 부모 항목이나 제목을 접는다. 부모가 없으면 그 줄을 접는다.");
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
 		toggle("unfoldOnEnter", "캐럿이 들어가면 펴기", "화살표나 클릭으로 캐럿이 접힌 줄에 들어가면 편다.");
+		if (Platform.isWin) toggle("siblingFold", "오른쪽 꾹 누르기로 형제 접기", "줄을 오른쪽 버튼으로 0.5초 누르면 그 줄과 같은 수준의 형제 항목이나 제목을 모두 접는다. 짧게 누르면 보통 메뉴가 뜬다.");
 	}
 }

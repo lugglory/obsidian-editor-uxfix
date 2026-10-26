@@ -1,7 +1,7 @@
 {
   "name": "obsidian-editor-uxfix",
   "version": "0.1.0",
-  "description": "Long-press a line to fold its parent; click where the caret is to fold or unfold the line; moving the caret onto a folded line unfolds it",
+  "description": "Long-press a line to fold its parent; right long-press (Windows) folds the line and its siblings; click where the caret is to fold or unfold the line; moving the caret onto a folded line unfolds it",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
