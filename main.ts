@@ -1,9 +1,8 @@
-import { App, MarkdownView, Platform, Plugin, PluginSettingTab, Setting, editorInfoField, moment } from "obsidian";
+import { App, MarkdownView, Plugin, PluginSettingTab, Setting, editorInfoField, moment } from "obsidian";
 import { EditorState, Line, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
 
-const LONG_PRESS = 400; // 꾹 누르기 ms
 const GAUGE_DELAY = 120; // 꾹 누르기 게이지를 띄우기까지 ms(짧은 클릭에는 안 보이게)
 const MOVE_SLOP = 4;    // 이만큼 넘게 움직이면 꾹 누르기가 아니다(드래그 선택)
 const SCAN_UP = 2000;   // 부모를 찾아 위로 훑는 줄 수
@@ -12,15 +11,16 @@ const WHEEL_IDLE = 300; // 이만큼(ms) 휠이 멈추면 덜 찬 양을 버린�
 
 interface Settings {
 	longPress: boolean;   // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기)
+	longPressMs: number;  // 꾹 누르기로 치는 시간(ms)
 	clickToggle: boolean; // 캐럿 자리 클릭 = 그 줄 접기/펴기
-	altWheel: boolean;      // Alt+휠 = 마우스 자리의 줄을 한 단계씩 펴기/접기
-	rightWheel: boolean;    // 오른쪽 버튼을 누른 채 휠 = Alt+휠(윈도우즈)
 	headerButtons: boolean; // 편집기 위쪽 줄의 끝까지 펴기/접기 버튼
-	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠 = Alt+휠
+	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠 = 그 줄을 한 단계씩 펴기/접기
 	leftClick: boolean;     // 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기(꺾쇠 단추처럼, 캐럿은 그대로)
 }
 
-const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, altWheel: true, rightWheel: true, headerButtons: true, leftWheel: true, leftClick: true };
+const DEFAULT_SETTINGS: Settings = { longPress: true, longPressMs: 400, clickToggle: true, headerButtons: true, leftWheel: true, leftClick: true };
+
+type BoolKey = Exclude<keyof Settings, "longPressMs">;
 
 // 편집기 확장들이 이벤트 때마다 읽는다: 설정을 바꾸면 바로 적용된다
 const settings: Settings = { ...DEFAULT_SETTINGS };
@@ -37,17 +37,14 @@ const STRINGS = {
 		foldAll: "Fold all",
 		unfoldAll: "Unfold all",
 		longPress: ["Long-press to fold",
-			"Hold a line for 0.4 s to fold or unfold it. On a line with no children, its parent (list item or heading) folds. Left of the text (with Click left of text on), the parent folds even if the line has children. A ring next to the mouse fills up while you hold."],
+			"Hold a line to fold or unfold it. On a line with no children, its parent (list item or heading) folds. Left of the text (with Click left of text on), the parent folds even if the line has children. A ring next to the mouse fills up while you hold."],
+		longPressMs: ["Long-press time", "How long to hold, in milliseconds, before a press counts as a long-press."],
 		clickToggle: ["Click the caret spot to fold",
 			"Clicking exactly where the caret already is folds or unfolds that line."],
-		altWheel: ["Alt+wheel folds step by step",
-			"With Alt held, each wheel notch unfolds (up) or folds (down) the line under the mouse and its children by one level. Nothing happens on a line with no children. The line under the mouse stays in place."],
-		rightWheel: ["Right-button+wheel folds step by step",
-			"Wheeling while holding the right mouse button works like Alt+wheel, and the context menu doesn't open when you release. Windows only."],
 		headerButtons: ["Fold all / unfold all buttons",
 			"Adds fold-all and unfold-all buttons to the view header (next to the reading view toggle). Fold all folds every level, hidden ones included. A button is dimmed when there is nothing to do."],
 		leftWheel: ["Wheel left of text folds step by step",
-			"Wheeling left of the text (margin, indentation, list markers, numbers, heading #) works like Alt+wheel without Alt, and doesn't scroll there. While this or Click left of text is on, hovering there tints the line and its children and shows a pointer cursor."],
+			"Wheeling left of the text (margin, indentation, list markers, numbers, heading #) unfolds (up) or folds (down) that line and its children one level per notch, and doesn't scroll there. Nothing happens on a line with no children. The line under the mouse stays in place. While this or Click left of text is on, hovering there tints the line and its children and shows a pointer cursor."],
 		leftClick: ["Click left of text to fold",
 			"Clicking left of the text folds or unfolds that line, like the fold chevron: the caret and focus stay put, and nothing happens on a line with no children. No drag selection starts there."],
 	},
@@ -55,17 +52,14 @@ const STRINGS = {
 		foldAll: "끝까지 접기",
 		unfoldAll: "끝까지 펴기",
 		longPress: ["꾹 누르기로 접기/펴기",
-			"줄을 0.4초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 꾹 누르면 자식이 있어도 부모를 접는다. 누르는 동안 마우스 옆에 원형 게이지가 차오른다."],
+			"줄을 꾹 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 꾹 누르면 자식이 있어도 부모를 접는다. 누르는 동안 마우스 옆에 원형 게이지가 차오른다."],
+		longPressMs: ["꾹 누르기 시간", "이만큼(밀리초) 누르고 있어야 꾹 누르기로 친다."],
 		clickToggle: ["캐럿 자리 클릭으로 접기/펴기",
 			"캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다."],
-		altWheel: ["Alt+휠로 그 줄 단계별 접기/펴기",
-			"Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다."],
-		rightWheel: ["오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기",
-			"오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다."],
 		headerButtons: ["끝까지 펴기/접기 버튼",
 			"편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 끝까지 접기, 끝까지 펴기 버튼을 둔다. 끝까지 접기는 숨은 안쪽까지 모두 접는다. 누를 수 없는 버튼은 흐리게 한다."],
 		leftWheel: ["글 왼쪽에서 휠로 그 줄 단계별 접기/펴기",
-			"글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 Alt 없이도 Alt+휠과 같고, 그곳에서는 스크롤되지 않는다. 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 그곳에 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다."],
+			"글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 그 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 그곳에서는 스크롤되지 않고, 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다. 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 그곳에 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다."],
 		leftClick: ["글 왼쪽 클릭으로 그 줄 접기/펴기",
 			"글보다 왼쪽을 클릭하면 접기 꺾쇠 단추처럼 그 줄을 접거나 편다. 캐럿과 포커스는 그대로이고, 자식이 없는 줄이면 아무 일도 없다. 그곳에서는 드래그 선택이 시작되지 않는다."],
 	},
@@ -149,7 +143,7 @@ function visibleTree(state: EditorState, roots: Range[]): Node[] {
 }
 
 // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기/펴기.
-// Alt+휠(윈도우즈는 오른쪽 버튼을 누른 채 휠도) = 마우스 자리의 줄과 그 안을 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로). 마우스 자리의 줄은 제자리에 둔다. 자식이 없는 줄이면 아무 일도 없다.
+// 글 왼쪽 휠 = 그 높이의 줄과 그 안을 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로). 마우스 자리의 줄은 제자리에 둔다. 자식이 없는 줄이면 아무 일도 없다.
 // 편집기 위쪽 줄의 버튼 = 문서 전체를 끝까지 펴기/접기. 누를 수 없는 버튼은 흐리게 한다
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
@@ -159,7 +153,6 @@ const pressFold = ViewPlugin.fromClass(class {
 	wheelAcc = 0;         // 아직 한 단계가 안 된 휠 양
 	wheelAt = 0;          // 마지막 휠 시각
 	anchor: { pos: number; top: number } | null = null; // keepLine: 화면에 붙들어 둘 줄과 그 원래 높이
-	unblockMenu: (() => void) | null = null; // blockMenu가 건 것을 푼다
 	frame: number | null = null; // keepLine이 높이를 맞출 프레임
 	buttons: { md: MarkdownView; openAll: HTMLElement; foldAll: HTMLElement } | null = null;
 	refreshTimer: number | null = null;
@@ -257,8 +250,8 @@ const pressFold = ViewPlugin.fromClass(class {
 			el.setCssProps({
 				left: `${x + 14}px`,
 				top: `${y + 14}px`,
-				"--editor-uxfix-gauge-start": String(1 - GAUGE_DELAY / LONG_PRESS),
-				"--editor-uxfix-gauge-time": `${LONG_PRESS - GAUGE_DELAY}ms`,
+				"--editor-uxfix-gauge-start": String(1 - GAUGE_DELAY / settings.longPressMs),
+				"--editor-uxfix-gauge-time": `${settings.longPressMs - GAUGE_DELAY}ms`,
 			});
 			const svg = doc.createElementNS(ns, "svg");
 			svg.setAttribute("viewBox", "0 0 18 18");
@@ -380,7 +373,7 @@ const pressFold = ViewPlugin.fromClass(class {
 				this.cancel();
 				this.holdUntilRelease(win);
 				this.foldUp(local.pos);
-			}, LONG_PRESS);
+			}, settings.longPressMs);
 			this.startGauge(win, e.clientX, e.clientY);
 			return;
 		}
@@ -400,7 +393,7 @@ const pressFold = ViewPlugin.fromClass(class {
 			this.cancel();
 			this.holdUntilRelease(win);
 			this.toggle(pos, true);
-		}, LONG_PRESS);
+		}, settings.longPressMs);
 		this.startGauge(win, e.clientX, e.clientY);
 	}
 
@@ -434,18 +427,12 @@ const pressFold = ViewPlugin.fromClass(class {
 
 	onWheel = (e: WheelEvent) => {
 		if (e.ctrlKey || e.metaKey) return;
-		// 오른쪽 버튼을 누른 채 굴리기 = Alt+휠. 윈도우즈만: 오른쪽 클릭 메뉴가 버튼을 뗄 때 떠서 그때 막을 수 있다
-		// (맥, 리눅스는 누르는 순간 뜬다)
-		const right = !e.altKey && (e.buttons & 2) !== 0 && Platform.isWin && settings.rightWheel;
-		// 글 왼쪽에서는 키 없이도. Shift+휠(가로 스크롤)은 그대로 둔다
-		const local = settings.leftWheel && (!e.shiftKey || e.altKey) ? this.leftRange(e.clientX, e.clientY) : null;
-		if (!local && !(e.altKey ? settings.altWheel : right)) return;
+		// 글 왼쪽에서만. Shift+휠(가로 스크롤)은 그대로 둔다
+		if (e.shiftKey) return;
+		const local = settings.leftWheel ? this.leftRange(e.clientX, e.clientY) : null;
+		if (!local) return;
 		e.preventDefault();
-		// 오른쪽 버튼을 누른 채였으면(글 왼쪽 휠이라 rightWheel이 꺼져 있어도) 뗄 때 메뉴가 뜨지 않게
-		if ((e.buttons & 2) !== 0 && Platform.isWin) this.blockMenu();
-		// Shift를 같이 누르면 브라우저가 가로 스크롤로 바꿔 deltaX로 보낸다
-		const raw = e.deltaY !== 0 ? e.deltaY : e.deltaX;
-		const delta = e.deltaMode === 1 ? raw * 40 : e.deltaMode === 2 ? raw * 800 : raw;
+		const delta = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
 		// 방향이 바뀌거나 한동안 멈췄으면 쌓인 양을 버린다(한참 전에 조금 굴린 것이 다음 휠에 더해지지 않게)
 		if (Math.sign(delta) !== Math.sign(this.wheelAcc) || e.timeStamp - this.wheelAt > WHEEL_IDLE) this.wheelAcc = 0;
 		this.wheelAt = e.timeStamp;
@@ -453,8 +440,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (Math.abs(this.wheelAcc) < WHEEL_STEP) return;
 		const open = this.wheelAcc < 0; // 위로 = 펴기
 		this.wheelAcc = 0;
-		const pos = local ? local.pos : this.view.posAtCoords({ x: e.clientX, y: e.clientY });
-		if (pos === null) return;
+		const { pos } = local;
 		this.keepLine(pos, () => this.stepLine(pos, open));
 	};
 
@@ -478,22 +464,6 @@ const pressFold = ViewPlugin.fromClass(class {
 		const text = view.coordsAtPos(line.from + lead[0].length);
 		if (!text || x >= text.left) return null;
 		return { pos, line, range: ownFold(state, line.from) };
-	}
-
-	// 오른쪽 버튼을 누른 채 휠을 굴렸으면 버튼을 뗄 때 뜨는 메뉴를 막는다.
-	// 떼는 신호를 창 밖에서 놓쳤어도 새로 누르면 푼다
-	blockMenu() {
-		if (this.unblockMenu) return;
-		const win = this.view.dom.ownerDocument.defaultView || window;
-		const menu = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); off(); };
-		const off = () => {
-			win.removeEventListener("contextmenu", menu, true);
-			win.removeEventListener("mousedown", off, true);
-			this.unblockMenu = null;
-		};
-		win.addEventListener("contextmenu", menu, true);
-		win.addEventListener("mousedown", off, true);
-		this.unblockMenu = off;
 	}
 
 	// roots를 지금 상태에서 한 단계: 펴기는 보이는 접힌 줄 중 가장 얕은 깊이를 모두 펴고,
@@ -604,7 +574,6 @@ const pressFold = ViewPlugin.fromClass(class {
 	destroy() {
 		this.cancel();
 		if (this.release) this.release();
-		if (this.unblockMenu) this.unblockMenu();
 		if (this.frame !== null) (this.view.dom.ownerDocument.defaultView || window).cancelAnimationFrame(this.frame);
 		if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
 		refreshers.delete(this.refresh);
@@ -625,9 +594,10 @@ export default class EditorUxfixPlugin extends Plugin {
 	async onload() {
 		// 없어진 설정 항목이 남아 있어도 읽지 않는다
 		const saved = (await this.loadData()) || {};
-		for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
-			if (typeof saved[key] === "boolean") settings[key] = saved[key];
+		for (const key of Object.keys(DEFAULT_SETTINGS) as BoolKey[]) {
+			if (typeof saved[key] === "boolean" && typeof DEFAULT_SETTINGS[key] === "boolean") settings[key] = saved[key];
 		}
+		if (typeof saved.longPressMs === "number") settings.longPressMs = Math.min(1000, Math.max(200, saved.longPressMs));
 		this.addSettingTab(new SettingTab(this.app, this));
 		this.registerEditorExtension([hoverField, pressFold]);
 		// 읽기 모드로 바꾸면 버튼을 감춘다
@@ -644,14 +614,17 @@ class SettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 		const text = t();
-		const toggle = (key: keyof Settings) =>
+		const toggle = (key: BoolKey) =>
 			new Setting(containerEl).setName(text[key][0]).setDesc(text[key][1]).addToggle(c => c
 				.setValue(settings[key])
 				.onChange(async v => { settings[key] = v; refreshAll(); await this.plugin.saveSettings(); }));
 		toggle("longPress");
+		new Setting(containerEl).setName(text.longPressMs[0]).setDesc(text.longPressMs[1]).addSlider(c => c
+			.setLimits(200, 1000, 50)
+			.setValue(settings.longPressMs)
+			.setDynamicTooltip()
+			.onChange(async v => { settings.longPressMs = v; await this.plugin.saveSettings(); }));
 		toggle("clickToggle");
-		toggle("altWheel");
-		if (Platform.isWin) toggle("rightWheel");
 		toggle("headerButtons");
 		toggle("leftWheel");
 		toggle("leftClick");
