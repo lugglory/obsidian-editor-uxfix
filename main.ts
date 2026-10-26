@@ -154,7 +154,7 @@ const unfoldOnEnter = EditorState.transactionExtender.of((tr: Transaction) => {
 	return r ? { effects: unfoldEffect.of(r) } : null;
 });
 
-export default class LinetreePlugin extends Plugin {
+export default class EditorUxfixPlugin extends Plugin {
 	async onload() {
 		this.registerEditorExtension([pressFold, unfoldOnEnter]);
 	}

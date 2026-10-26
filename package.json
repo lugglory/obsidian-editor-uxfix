@@ -1,5 +1,5 @@
 {
-  "name": "linetree",
+  "name": "obsidian-editor-uxfix",
   "version": "0.1.0",
   "description": "Long-press a line to fold it; moving the cursor onto a folded line unfolds it",
   "main": "main.js",

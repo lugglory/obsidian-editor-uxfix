@@ -1,6 +1,4 @@
-# Linetree for Obsidian
-
-[linetree](../linetree) 앱의 접기 동작을 옵시디언 편집기에 넣는다.
+# Editor UX Fix
 
 - **꾹 누르기(0.5초) = 접기.** 자식이 있는 목록 항목이나 제목이면 그 줄을, 잎이면 그 줄을 품은 가장 가까운 위 줄(부모 항목, 제목)을 접는다. 누르는 동안 4px 넘게 움직이면 보통 드래그 선택이다.
 - **캐럿이 접힌 줄로 들어가면 펴진다.** 화살표로 그 줄에 오거나 그 줄을 클릭하면 펴진다. 범위 선택(Shift) 중에는 펴지 않는다.
@@ -15,5 +13,5 @@ npm install
 npm run build
 ```
 
-`main.js`, `manifest.json`을 `<볼트>/.obsidian/plugins/linetree/`에 복사하고 설정 → 커뮤니티 플러그인에서 켠다.
+`main.js`, `manifest.json`을 `<볼트>/.obsidian/plugins/editor-uxfix/`에 복사하고 설정 → 커뮤니티 플러그인에서 켠다.
 옵시디언 설정의 "들여쓰기 접기"(Fold indent)와 "제목 접기"(Fold heading)가 켜져 있어야 접을 수 있다.
