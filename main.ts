@@ -14,9 +14,10 @@ interface Settings {
 	altWheel: boolean;      // Alt+휠 = 문서 전체를 한 단계씩 펴기/접기
 	rightWheel: boolean;    // 오른쪽 버튼을 누른 채 휠 = Alt+휠(윈도우즈)
 	headerButtons: boolean; // 편집기 위쪽 줄의 한 단계 펴기/접기 버튼
+	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠 = 그 자리 범위를 한 단계씩 펴기/접기
 }
 
-const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, altWheel: true, rightWheel: true, headerButtons: true };
+const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, altWheel: true, rightWheel: true, headerButtons: true, leftWheel: true };
 
 // 편집기 확장들이 이벤트 때마다 읽는다: 설정을 바꾸면 바로 적용된다
 const settings: Settings = { ...DEFAULT_SETTINGS };
@@ -94,7 +95,7 @@ function visibleTree(state: EditorState, roots: Range[]): Node[] {
 
 // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기/펴기.
 // Alt+휠(윈도우즈는 오른쪽 버튼을 누른 채 휠도) = 문서 전체를 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로). 마우스 자리의 줄은 제자리에 둔다.
-// 편집기 위쪽 줄의 버튼 = 문서 전체를 한 단계 펴기/접기. 더 펼 것이 없으면 펴기 버튼을, 더 접을 것이 없으면 접기 버튼을 감춘다
+// 편집기 위쪽 줄의 버튼 = 문서 전체를 한 단계 펴기/접기. 더 펼 것이 없으면 펴기 버튼을, 더 접을 것이 없으면 접기 버튼을 흐리게 한다
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
 	cleanup: (() => void) | null = null;
@@ -125,16 +126,26 @@ const pressFold = ViewPlugin.fromClass(class {
 		this.buttons = { md, open, fold };
 	}
 
-	// 버튼은 누를 수 있을 때만 보인다(읽기 모드에서는 감춘다)
+	// 누를 수 없는 버튼은 흐리게 한다(감추면 옆 버튼 자리가 바뀐다). 읽기 모드에서는 둘 다 감춘다
 	refresh = () => {
 		if (this.refreshTimer !== null) { window.clearTimeout(this.refreshTimer); this.refreshTimer = null; }
 		this.attach();
 		const b = this.buttons;
 		if (!b) return;
+		const show = settings.headerButtons && b.md.getMode() === "source";
+		b.open.toggle(show);
+		b.fold.toggle(show);
+		if (!show) return;
 		const { state } = this.view;
-		const nodes = settings.headerButtons && b.md.getMode() === "source" ? visibleTree(state, childFolds(state, null)) : [];
-		b.open.toggle(nodes.some(n => n.folded));
-		b.fold.toggle(nodes.some(n => !n.folded));
+		const nodes = visibleTree(state, childFolds(state, null));
+		const enable = (el: HTMLElement, on: boolean) => {
+			el.toggleClass("is-disabled", !on);
+			el.setAttr("aria-disabled", String(!on));
+			el.style.opacity = on ? "" : "0.3";
+			el.style.cursor = on ? "" : "default";
+		};
+		enable(b.open, nodes.some(n => n.folded));
+		enable(b.fold, nodes.some(n => !n.folded));
 	};
 
 	cancel() {
@@ -229,8 +240,9 @@ const pressFold = ViewPlugin.fromClass(class {
 		// 오른쪽 버튼을 누른 채 굴리기 = Alt+휠. 윈도우즈만: 오른쪽 클릭 메뉴가 버튼을 뗄 때 떠서 그때 막을 수 있다
 		// (맥, 리눅스는 누르는 순간 뜬다)
 		const right = !e.altKey && (e.buttons & 2) !== 0 && Platform.isWin && settings.rightWheel;
-		if (!e.altKey && !right) return;
-		if (!right && !settings.altWheel) return;
+		// 글 왼쪽에서는 키 없이도 그 자리 범위. Shift+휠(가로 스크롤)은 그대로 둔다
+		const local = settings.leftWheel && (!e.shiftKey || e.altKey) ? this.leftRange(e.clientX, e.clientY) : null;
+		if (!local && !(e.altKey ? settings.altWheel : right)) return;
 		e.preventDefault();
 		if (right) this.blockMenu();
 		// Shift를 같이 누르면 브라우저가 가로 스크롤로 바꿔 deltaX로 보낸다
@@ -242,11 +254,40 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (Math.abs(this.wheelAcc) < WHEEL_STEP) return;
 		const open = this.wheelAcc < 0; // 위로 = 펴기
 		this.wheelAcc = 0;
+		if (local) { this.keepLine(local.pos, () => this.step([local.range], open)); return; }
 		const whole = () => this.step(childFolds(this.view.state, null), open);
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
 		if (pos === null) whole();
 		else this.keepLine(pos, whole);
 	};
+
+	// 마우스가 글 왼쪽(편집기 왼쪽 여백, 들여쓰기, 목록 기호, 번호, 체크박스, 제목 #)에 있으면 그 자리가 나타내는 범위.
+	// 기호가 있는 들여쓰기 칸(가이드선 자리)은 그 칸에 기호가 있는 위 항목, 줄 자신의 기호와 그 왼쪽 여백은 그 줄이다
+	// (자식이 없으면 부모). 들여쓴 줄의 왼쪽 여백은 맨 바깥(들여쓰지 않은) 위 항목이다
+	leftRange(x: number, y: number): { pos: number; range: Range } | null {
+		const { view } = this;
+		const { state } = view;
+		// 여백에서는 글이 없으니 같은 높이의 글 쪽 자리로 줄을 찾는다
+		const contentLeft = view.contentDOM.getBoundingClientRect().left;
+		const pos = view.posAtCoords({ x: Math.max(x, contentLeft + 1), y });
+		if (pos === null) return null;
+		const line = visibleLine(state, pos);
+		const lead = /^(\s*)((?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?|#{1,6}\s+)?/.exec(line.text)!;
+		const text = view.coordsAtPos(line.from + lead[0].length);
+		if (!text || x >= text.left) return null;
+		const indent = lead[1].length;
+		// 들여쓰기 n칸 자리의 x. 들여쓰지 않은 칸은 왼쪽 여백 전체다
+		const colX = (n: number) => n === 0 ? -Infinity : view.coordsAtPos(line.from + Math.min(n, indent))?.left ?? -Infinity;
+		let range: Range | null = null;
+		if (x >= colX(indent)) range = ownFold(state, line.from) || parentFold(state, line.from);
+		else {
+			// 그 칸에 기호가 있는 가장 가까운 위 항목(마우스보다 왼쪽에서 시작하는 첫 위 항목)
+			for (let r = parentFold(state, line.from); r; r = parentFold(state, r.from)) {
+				if (x >= colX(/^\s*/.exec(state.doc.lineAt(r.from).text)![0].length)) { range = r; break; }
+			}
+		}
+		return range ? { pos, range } : null;
+	}
 
 	// 오른쪽 버튼을 누른 채 휠을 굴렸으면 버튼을 뗄 때 뜨는 메뉴를 막는다.
 	// 떼는 신호를 창 밖에서 놓쳤어도 새로 누르면 푼다
@@ -380,6 +421,7 @@ class SettingTab extends PluginSettingTab {
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
 		toggle("altWheel", "Alt+휠로 문서 전체 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 문서 전체를 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 마우스가 가리키는 줄은 제자리에 남는다.");
 		if (Platform.isWin) toggle("rightWheel", "오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기", "오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다.");
-		toggle("headerButtons", "위쪽 줄에 한 단계 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 한 단계 펴고 접는 버튼을 둔다. 더 펼 것이 없으면 펴기 버튼을, 더 접을 것이 없으면 접기 버튼을 감춘다.");
+		toggle("headerButtons", "위쪽 줄에 한 단계 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 한 단계 펴고 접는 버튼을 둔다. 더 펼 것이 없으면 펴기 버튼을, 더 접을 것이 없으면 접기 버튼을 흐리게 한다.");
+		toggle("leftWheel", "글 왼쪽에서 휠로 그 범위 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 자리의 범위를 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 줄 자신의 기호나 그 왼쪽 여백은 그 줄(자식이 없으면 부모), 들여쓰기 칸은 그 칸에 기호가 있는 위 항목이 범위다. 그 동안 그곳에서는 휠로 스크롤되지 않는다.");
 	}
 }

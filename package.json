@@ -1,7 +1,7 @@
 {
   "name": "obsidian-editor-uxfix",
   "version": "0.1.0",
-  "description": "Long-press a line to fold or unfold it (its parent if it has no children); click where the caret is to toggle the line; Alt+wheel (or wheel while holding the right button, on Windows) folds or unfolds the whole document one level at a time, keeping the line under the mouse in place; header buttons do the same",
+  "description": "Long-press a line to fold or unfold it (its parent if it has no children); click where the caret is to toggle the line; Alt+wheel (or wheel while holding the right button, on Windows) folds or unfolds the whole document one level at a time, keeping the line under the mouse in place; the wheel left of the text (margin, indentation, list markers, heading #) steps just the range that spot belongs to; header buttons do the same",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
