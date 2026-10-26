@@ -196,25 +196,29 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (Math.abs(this.wheelAcc) < WHEEL_STEP) return;
 		const open = this.wheelAcc < 0; // 위로 = 펴기
 		this.wheelAcc = 0;
+		// 그 줄이 이미 다 펴졌거나 다 접혔으면(또는 대상이 없으면) 문서 전체를 한 단계(Alt+Shift+휠이 켜져 있을 때)
+		const wholeStep = () => (whole || settings.altShiftWheel) && this.step(childFolds(this.view.state, null), open);
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
-		if (pos === null) { if (whole) this.step(childFolds(this.view.state, null), open); return; }
+		if (pos === null) { wholeStep(); return; }
 		this.keepLine(pos, () => {
+			if (whole) { wholeStep(); return; }
+			// 그 줄(자식이 없으면 부모)과 그 자손
 			const { state } = this.view;
-			// 그 줄(자식이 없으면 부모)과 그 자손, 또는 문서 전체
 			const own = ownFold(state, pos) || parentFold(state, pos);
-			this.step(whole ? childFolds(state, null) : own ? [own] : [], open);
+			if (!(own && this.step([own], open))) wholeStep();
 		});
 	};
 
 	// roots를 지금 상태에서 한 단계: 펴기는 보이는 접힌 줄 중 가장 얕은 깊이를 모두 펴고,
-	// 접기는 보이는 펼친 줄 중 가장 깊은 깊이를 모두 접는다(마지막엔 roots가 접힌다)
-	step(roots: Range[], open: boolean) {
+	// 접기는 보이는 펼친 줄 중 가장 깊은 깊이를 모두 접는다(마지막엔 roots가 접힌다). 바꿀 것이 없으면 false
+	step(roots: Range[], open: boolean): boolean {
 		const nodes = visibleTree(this.view.state, roots).filter(n => n.folded === open);
-		if (!nodes.length) return;
+		if (!nodes.length) return false;
 		const depth = nodes.reduce((d, n) => open ? Math.min(d, n.depth) : Math.max(d, n.depth), nodes[0].depth);
 		const ranges = nodes.filter(n => n.depth === depth).map(n => n.range);
 		if (open) this.view.dispatch({ effects: ranges.map(r => unfoldEffect.of(r)) });
 		else this.foldRanges(ranges);
+		return true;
 	}
 
 	// 접혀 있으면 편다. 아니면 그 줄을 접고, 자식이 없으면 parentIfLeaf일 때 부모를 접는다
@@ -235,8 +239,10 @@ const pressFold = ViewPlugin.fromClass(class {
 	keepLine(pos: number, change: () => void) {
 		const { view } = this;
 		if (!this.anchor) {
-			const c = view.coordsAtPos(visibleLine(view.state, pos).from);
-			if (c) this.anchor = { pos, top: c.top };
+			// pos가 … 오른쪽(숨은 본문 끝)이어도 보이는 줄 머리를 붙든다: 펴진 뒤 숨었던 본문 끝 줄을 따라가지 않게
+			const from = visibleLine(view.state, pos).from;
+			const c = view.coordsAtPos(from);
+			if (c) this.anchor = { pos: from, top: c.top };
 		}
 		change();
 		if (!this.anchor) return;
@@ -309,7 +315,7 @@ class SettingTab extends PluginSettingTab {
 				.onChange(async v => { settings[key] = v; await this.plugin.saveSettings(); }));
 		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.4초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다.");
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
-		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 그 부모가 대상이다.");
+		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 그 부모가 대상이다. 그 줄이 이미 다 펴졌거나 다 접혔으면 문서 전체를 한 단계 움직인다(Alt+Shift+휠이 켜져 있을 때).");
 		toggle("altShiftWheel", "Alt+Shift+휠로 문서 전체 단계별 접기/펴기", "Alt와 Shift를 누른 채 휠을 굴리면 마우스 위치와 상관없이 문서 전체를 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로).");
 	}
 }
