@@ -39,11 +39,13 @@ function foldTarget(state: EditorState, pos: number, withParent: boolean): Range
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
 	cleanup: (() => void) | null = null;
+	release: (() => void) | null = null; // 꾹 누르기 뒤 holdUntilRelease가 건 것을 푼다
+	win: Window = window; // 편집기가 있는 창(분리 창일 수 있다). 타이머도 이 창에 건다
 
 	constructor(readonly view: EditorView) {}
 
 	cancel() {
-		if (this.timer !== null) { window.clearTimeout(this.timer); this.timer = null; }
+		if (this.timer !== null) { this.win.clearTimeout(this.timer); this.timer = null; }
 		if (this.cleanup) { this.cleanup(); this.cleanup = null; }
 	}
 
@@ -55,7 +57,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
 		const target = e.target as HTMLElement;
 		// 접기 화살표, 체크박스 같은 위젯은 제 동작에 맡긴다
-		if (target.closest(".cm-foldGutter, .collapse-indicator, .cm-fold-indicator, input, button")) return;
+		if (target.closest(".cm-foldGutter, .collapse-indicator, .cm-fold-indicator, .cm-foldPlaceholder, input, button")) return;
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
 		if (pos === null) return;
 		const { state } = this.view;
@@ -66,7 +68,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		const sel = state.selection.main;
 		const inPlace = this.view.hasFocus && sel.empty && sel.head === pos && e.detail === 1;
 		const x = e.clientX, y = e.clientY;
-		const win = this.view.dom.ownerDocument.defaultView || window;
+		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
 		const onMove = (m: MouseEvent) => { if (Math.abs(m.clientX - x) > MOVE_SLOP || Math.abs(m.clientY - y) > MOVE_SLOP) this.cancel(); };
 		const onUp = () => {
 			const shortClick = this.timer !== null; // 꾹 누르기가 되기 전에, 움직이지 않고 뗐다
@@ -74,15 +76,19 @@ const pressFold = ViewPlugin.fromClass(class {
 			// 캐럿이 그대로면 CodeMirror가 선택을 내지 않아 unfoldOnEnter도 돌지 않는다: 여기서 접거나 편다
 			if (shortClick && inPlace) { if (wasFolded) this.unfold(pos); else this.fold(pos, false); }
 		};
+		// 누른 채 창을 벗어나면(Alt+Tab 등) 떼는 신호를 못 받을 수 있다: 꾹 누르기로 치지 않는다
+		const onBlur = () => this.cancel();
 		win.addEventListener("mousemove", onMove, true);
 		win.addEventListener("mouseup", onUp, true);
+		win.addEventListener("blur", onBlur);
 		this.view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
 		this.cleanup = () => {
 			win.removeEventListener("mousemove", onMove, true);
 			win.removeEventListener("mouseup", onUp, true);
+			win.removeEventListener("blur", onBlur);
 			this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
 		};
-		this.timer = window.setTimeout(() => {
+		this.timer = win.setTimeout(() => {
 			this.timer = null;
 			this.cancel();
 			this.holdUntilRelease(win);
@@ -93,19 +99,29 @@ const pressFold = ViewPlugin.fromClass(class {
 	onScroll = () => this.cancel();
 
 	// 꾹 누르기가 된 뒤 손을 뗄 때까지: 마우스 움직임을 CodeMirror의 드래그 선택에 보내지 않고(접혀서 자리가
-	// 바뀐 문서에 엉뚱한 범위가 잡힌다), 뗄 때의 클릭도 삼킨다(링크 위였으면 열리지 않게)
+	// 바뀐 문서에 엉뚱한 범위가 잡힌다), 뗄 때의 클릭도 삼킨다(링크 위였으면 열리지 않게).
+	// 떼는 신호를 놓쳤어도 새로 누르면 이전 누름은 끝난 것이니 바로 푼다(그 클릭은 삼키지 않는다)
 	holdUntilRelease(win: Window) {
 		const block = (ev: Event) => ev.stopPropagation();
 		const stop = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); };
-		const release = () => {
+		const off = () => {
 			win.removeEventListener("mousemove", block, true);
-			win.removeEventListener("mouseup", release, true);
+			win.removeEventListener("mouseup", up, true);
+			win.removeEventListener("mousedown", off, true);
+			win.removeEventListener("click", stop, true);
+			this.release = null;
+		};
+		const up = () => {
+			win.removeEventListener("mousemove", block, true);
+			win.removeEventListener("mouseup", up, true);
 			// click은 mouseup 바로 뒤에 온다
-			win.setTimeout(() => win.removeEventListener("click", stop, true), 0);
+			win.setTimeout(off, 0);
 		};
 		win.addEventListener("mousemove", block, true);
-		win.addEventListener("mouseup", release, true);
+		win.addEventListener("mouseup", up, true);
+		win.addEventListener("mousedown", off, true);
 		win.addEventListener("click", stop, true);
+		this.release = off;
 	}
 
 	fold(pos: number, withParent: boolean) {
@@ -132,7 +148,10 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (r) this.view.dispatch({ effects: unfoldEffect.of(r), annotations: ours.of(true) });
 	}
 
-	destroy() { this.cancel(); }
+	destroy() {
+		this.cancel();
+		if (this.release) this.release();
+	}
 }, {
 	eventHandlers: {
 		mousedown(e) { this.start(e); return false; }, // 캐럿 놓기는 CodeMirror 기본 동작에 맡긴다
