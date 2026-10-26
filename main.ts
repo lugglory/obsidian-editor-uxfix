@@ -233,11 +233,20 @@ const pressFold = ViewPlugin.fromClass(class {
 			const hit = m && (settings.leftWheel || settings.leftClick) ? this.leftRange(m.x, m.y) : null;
 			let next: Range | null = null;
 			if (hit) next = { from: hit.line.from, to: Math.max(hit.range.to, hit.line.to) };
+			// 휠, 클릭이 되는 곳임을 알 수 있게 손가락 커서(글 영역은 기본이 글자 커서라 둘 다에 건다)
+			this.setCursor(hit !== null);
 			const cur = this.view.state.field(hoverField, false);
 			if (cur === undefined || (cur?.from === next?.from && cur?.to === next?.to)) return;
 			this.view.dispatch({ effects: setHover.of(next) });
 		});
 	};
+
+	setCursor(on: boolean) {
+		const c = on ? "pointer" : "";
+		if (this.view.scrollDOM.style.cursor === c) return;
+		this.view.scrollDOM.style.cursor = c;
+		this.view.contentDOM.style.cursor = c;
+	}
 
 	// 칠할 범위 중 화면에 그려진 줄만. 접힌 줄 안은 접힌 줄로 친다
 	hoverDecorations(): DecorationSet {
@@ -497,6 +506,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		this.view.scrollDOM.removeEventListener("mouseleave", this.onHoverLeave);
 		this.view.scrollDOM.removeEventListener("scroll", this.hoverSoon);
 		if (this.hoverFrame !== null) (this.view.dom.ownerDocument.defaultView || window).cancelAnimationFrame(this.hoverFrame);
+		this.setCursor(false);
 	}
 }, {
 	decorations: v => v.decorations,
@@ -533,7 +543,7 @@ class SettingTab extends PluginSettingTab {
 		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다.");
 		if (Platform.isWin) toggle("rightWheel", "오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기", "오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다.");
 		toggle("headerButtons", "위쪽 줄에 끝까지 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 끝까지 펴기, 끝까지 접기 버튼을 둔다. 누를 수 없는 버튼은 흐리게 한다.");
-		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 있는 줄의 왼쪽에서는 휠로 스크롤되지 않는다(자식이 없는 줄이면 평소처럼 스크롤된다). 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 마우스를 올린 줄과 그 안을 옅게 칠한다.");
+		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 있는 줄의 왼쪽에서는 휠로 스크롤되지 않는다(자식이 없는 줄이면 평소처럼 스크롤된다). 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다.");
 		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄을 접거나 편다(자식이 없는 줄이면 캐럿만 옮겨진다). 누른 채 움직이면 보통 드래그 선택이다. 그곳에서는 꾹 누르기를 치지 않는다.");
 	}
 }
