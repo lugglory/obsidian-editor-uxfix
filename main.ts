@@ -180,6 +180,7 @@ const pressFold = ViewPlugin.fromClass(class {
 	// 누를 수 없는 버튼은 흐리게 한다(감추면 옆 버튼 자리가 바뀐다). 읽기 모드에서는 모두 감춘다
 	refresh = () => {
 		if (this.refreshTimer !== null) { window.clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+		this.hoverSoon(); // 설정을 바꿨으면 칠하기도 다시 본다
 		this.attach();
 		const b = this.buttons;
 		if (!b) return;
@@ -345,7 +346,8 @@ const pressFold = ViewPlugin.fromClass(class {
 		const local = settings.leftWheel && (!e.shiftKey || e.altKey) ? this.leftRange(e.clientX, e.clientY) : null;
 		if (!local && !(e.altKey ? settings.altWheel : right)) return;
 		e.preventDefault();
-		if (right) this.blockMenu();
+		// 오른쪽 버튼을 누른 채였으면(글 왼쪽 휠이라 rightWheel이 꺼져 있어도) 뗄 때 메뉴가 뜨지 않게
+		if ((e.buttons & 2) !== 0 && Platform.isWin) this.blockMenu();
 		// Shift를 같이 누르면 브라우저가 가로 스크롤로 바꿔 deltaX로 보낸다
 		const raw = e.deltaY !== 0 ? e.deltaY : e.deltaX;
 		const delta = e.deltaMode === 1 ? raw * 40 : e.deltaMode === 2 ? raw * 800 : raw;
@@ -531,7 +533,7 @@ class SettingTab extends PluginSettingTab {
 		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다.");
 		if (Platform.isWin) toggle("rightWheel", "오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기", "오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다.");
 		toggle("headerButtons", "위쪽 줄에 끝까지 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 끝까지 펴기, 끝까지 접기 버튼을 둔다. 누를 수 없는 버튼은 흐리게 한다.");
-		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 그 동안 그곳에서는 휠로 스크롤되지 않는다.");
-		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄을 접거나 편다(자식이 없는 줄이면 캐럿만 옮겨진다). 누른 채 움직이면 보통 드래그 선택이다.");
+		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 있는 줄의 왼쪽에서는 휠로 스크롤되지 않는다(자식이 없는 줄이면 평소처럼 스크롤된다). 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 마우스를 올린 줄과 그 안을 옅게 칠한다.");
+		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄을 접거나 편다(자식이 없는 줄이면 캐럿만 옮겨진다). 누른 채 움직이면 보통 드래그 선택이다. 그곳에서는 꾹 누르기를 치지 않는다.");
 	}
 }
