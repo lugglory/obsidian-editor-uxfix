@@ -16,7 +16,7 @@ interface Settings {
 	rightWheel: boolean;    // 오른쪽 버튼을 누른 채 휠 = Alt+휠(윈도우즈)
 	headerButtons: boolean; // 편집기 위쪽 줄의 끝까지 펴기/접기 버튼
 	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠 = Alt+휠
-	leftClick: boolean;     // 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기
+	leftClick: boolean;     // 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기(꺾쇠 단추처럼, 캐럿은 그대로)
 }
 
 const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, altWheel: true, rightWheel: true, headerButtons: true, leftWheel: true, leftClick: true };
@@ -232,7 +232,7 @@ const pressFold = ViewPlugin.fromClass(class {
 			const m = this.mouse;
 			const hit = m && (settings.leftWheel || settings.leftClick) ? this.leftRange(m.x, m.y) : null;
 			let next: Range | null = null;
-			if (hit) next = { from: hit.line.from, to: Math.max(hit.range.to, hit.line.to) };
+			if (hit) next = { from: hit.line.from, to: hit.range ? Math.max(hit.range.to, hit.line.to) : hit.line.to };
 			// 휠, 클릭이 되는 곳임을 알 수 있게 손가락 커서(글 영역은 기본이 글자 커서라 둘 다에 건다)
 			this.setCursor(hit !== null);
 			const cur = this.view.state.field(hoverField, false);
@@ -292,11 +292,16 @@ const pressFold = ViewPlugin.fromClass(class {
 		const target = e.target as HTMLElement;
 		// 접기 화살표, 체크박스 같은 위젯은 제 동작에 맡긴다
 		if (target.closest(".cm-foldGutter, .collapse-indicator, .cm-fold-indicator, .cm-foldPlaceholder, input, button")) return;
-		// 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기(꾹 누르기는 치지 않는다). 움직이면 보통 드래그 선택이다
-		const local = settings.leftClick && e.detail === 1 ? this.leftRange(e.clientX, e.clientY) : null;
+		// 글 왼쪽 클릭 = 접기 꺾쇠 단추처럼 그 높이의 줄 접기/펴기만(자식이 없으면 아무 일도 없다).
+		// CodeMirror에 넘기지 않으니 캐럿도 포커스도 그대로고, 드래그 선택도 시작되지 않는다. 움직였다 떼면 아무 일도 없다
+		const local = settings.leftClick ? this.leftRange(e.clientX, e.clientY) : null;
 		if (local) {
+			e.preventDefault();
+			e.stopPropagation();
+			const range = local.range;
+			if (!range || e.detail !== 1) return; // 더블클릭의 두 번째는 다시 토글하지 않는다
 			const win = this.win = this.view.dom.ownerDocument.defaultView || window;
-			this.track(win, e, () => this.toggleRange(local.pos, local.range));
+			this.track(win, e, () => this.toggleRange(local.pos, range));
 			return;
 		}
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
@@ -378,9 +383,9 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (own) this.step([own], open);
 	}
 
-	// 마우스가 글 왼쪽(편집기 왼쪽 여백, 들여쓰기, 목록 기호, 번호, 체크박스, 제목 #)에 있으면 그 높이의 줄을 접는 범위.
-	// 자식이 없는 줄이면 null(그곳은 휠이 스크롤이고 클릭은 캐럿 이동뿐이다)
-	leftRange(x: number, y: number): { pos: number; line: Line; range: Range } | null {
+	// 마우스가 글 왼쪽(편집기 왼쪽 여백, 들여쓰기, 목록 기호, 번호, 체크박스, 제목 #)에 있으면 그 높이의 줄과 그 줄을 접는 범위.
+	// 자식이 없는 줄이면 range가 null이다(그래도 글 왼쪽이니 휠은 스크롤하지 않는다)
+	leftRange(x: number, y: number): { pos: number; line: Line; range: Range | null } | null {
 		const { view } = this;
 		const { state } = view;
 		// 여백에서는 글이 없으니 같은 높이의 글 쪽 자리로 줄을 찾는다
@@ -391,8 +396,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		const lead = /^\s*((?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?|#{1,6}\s+)?/.exec(line.text)!;
 		const text = view.coordsAtPos(line.from + lead[0].length);
 		if (!text || x >= text.left) return null;
-		const range = ownFold(state, line.from);
-		return range ? { pos, line, range } : null;
+		return { pos, line, range: ownFold(state, line.from) };
 	}
 
 	// 오른쪽 버튼을 누른 채 휠을 굴렸으면 버튼을 뗄 때 뜨는 메뉴를 막는다.
@@ -543,7 +547,7 @@ class SettingTab extends PluginSettingTab {
 		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다.");
 		if (Platform.isWin) toggle("rightWheel", "오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기", "오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다.");
 		toggle("headerButtons", "위쪽 줄에 끝까지 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 끝까지 펴기, 끝까지 접기 버튼을 둔다. 누를 수 없는 버튼은 흐리게 한다.");
-		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 있는 줄의 왼쪽에서는 휠로 스크롤되지 않는다(자식이 없는 줄이면 평소처럼 스크롤된다). 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다.");
-		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄을 접거나 편다(자식이 없는 줄이면 캐럿만 옮겨진다). 누른 채 움직이면 보통 드래그 선택이다. 그곳에서는 꾹 누르기를 치지 않는다.");
+		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 그곳에서는 휠로 스크롤되지 않는다(자식이 없는 줄이면 아무 일도 없다). 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다.");
+		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄을 접거나 편다(자식이 없는 줄이면 아무 일도 없다). 접기 꺾쇠 단추처럼 캐럿과 포커스는 그대로이고, 그곳에서는 드래그 선택과 꾹 누르기가 되지 않는다.");
 	}
 }
