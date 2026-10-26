@@ -11,7 +11,7 @@ const WHEEL_STEP = 100; // Alt+휠 한 단계로 치는 스크롤 양(px). 마�
 interface Settings {
 	longPress: boolean;   // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기)
 	clickToggle: boolean; // 캐럿 자리 클릭 = 그 줄 접기/펴기
-	altWheel: boolean;    // Alt+휠 = 마우스 자리의 형제들을 한 단계씩 펴기/접기
+	altWheel: boolean;    // Alt+휠 = 문서 전체를 한 단계씩 펴기/접기
 }
 
 const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, altWheel: true };
@@ -54,14 +54,6 @@ function parentFold(state: EditorState, pos: number): Range | null {
 	return null;
 }
 
-// 목록 항목이면 들여쓰기, 제목이면 수준: 형제를 가르는 기준
-function lineKind(text: string): string | null {
-	const h = /^(#{1,6})\s/.exec(text);
-	if (h) return "h" + h[1].length;
-	const li = /^(\s*)([-*+]|\d+[.)])\s/.exec(text);
-	return li ? "li" + li[1] : null;
-}
-
 // 그 범위 바로 아래(자식)의 접을 수 있는 범위들. null이면 문서 최상단
 function childFolds(state: EditorState, parent: Range | null): Range[] {
 	const out: Range[] = [];
@@ -77,18 +69,10 @@ function childFolds(state: EditorState, parent: Range | null): Range[] {
 	return out;
 }
 
-// 그 줄과 형제(같은 부모 아래 같은 수준의 목록 항목이나 제목) 중 접을 수 있는 범위들. 부모가 없으면 문서 전체에서.
-// 목록 항목도 제목도 아닌 줄이면 부모 바로 아래의 접을 수 있는 줄 모두
-function siblingFolds(state: EditorState, pos: number): Range[] {
-	const kind = lineKind(visibleLine(state, pos).text);
-	return childFolds(state, parentFold(state, pos))
-		.filter(r => kind === null || lineKind(state.doc.lineAt(r.from).text) === kind);
-}
-
 type Node = { range: Range; depth: number; folded: boolean };
 
-// 형제들과 그 자손 중 화면에 보이는 접을 수 있는 줄들(형제 = 깊이 0). 접힌 줄의 안은 보이지 않으니 넣지 않는다
-function visibleTree(state: EditorState, roots: Range[]): Node[] {
+// 문서에서 화면에 보이는 접을 수 있는 줄들(최상단 = 깊이 0). 접힌 줄의 안은 보이지 않으니 넣지 않는다
+function visibleTree(state: EditorState): Node[] {
 	const out: Node[] = [];
 	const walk = (ranges: Range[], depth: number) => {
 		for (const r of ranges) {
@@ -98,12 +82,12 @@ function visibleTree(state: EditorState, roots: Range[]): Node[] {
 			if (!folded) walk(childFolds(state, r), depth + 1);
 		}
 	};
-	walk(roots, 0);
+	walk(childFolds(state, null), 0);
 	return out;
 }
 
 // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기/펴기.
-// Alt+휠 = 마우스 자리의 형제들을 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로)
+// Alt+휠 = 문서 전체를 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로)
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
 	cleanup: (() => void) | null = null;
@@ -206,15 +190,14 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (Math.abs(this.wheelAcc) < WHEEL_STEP) return;
 		const open = this.wheelAcc < 0; // 위로 = 펴기
 		this.wheelAcc = 0;
-		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
-		if (pos !== null) this.step(pos, open);
+		this.step(open);
 	};
 
-	// 형제들을 지금 상태에서 한 단계: 펴기는 보이는 접힌 줄 중 가장 얕은 깊이를 모두 펴고,
-	// 접기는 보이는 펼친 줄 중 가장 깊은 깊이를 모두 접는다(마지막엔 형제들 자신이 접힌다)
-	step(pos: number, open: boolean) {
+	// 문서 전체를 지금 상태에서 한 단계: 펴기는 보이는 접힌 줄 중 가장 얕은 깊이를 모두 펴고,
+	// 접기는 보이는 펼친 줄 중 가장 깊은 깊이를 모두 접는다(마지막엔 최상단 줄들이 접힌다)
+	step(open: boolean) {
 		const { state } = this.view;
-		const nodes = visibleTree(state, siblingFolds(state, pos)).filter(n => n.folded === open);
+		const nodes = visibleTree(state).filter(n => n.folded === open);
 		if (!nodes.length) return;
 		const depth = nodes.reduce((d, n) => open ? Math.min(d, n.depth) : Math.max(d, n.depth), nodes[0].depth);
 		const ranges = nodes.filter(n => n.depth === depth).map(n => n.range);
@@ -290,6 +273,6 @@ class SettingTab extends PluginSettingTab {
 				.onChange(async v => { settings[key] = v; await this.plugin.saveSettings(); }));
 		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.5초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다.");
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
-		toggle("altWheel", "Alt+휠로 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 형제들을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 최상단 줄 위에서 굴리면 문서 전체가 대상이다.");
+		toggle("altWheel", "Alt+휠로 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스 위치와 상관없이 문서 전체를 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로).");
 	}
 }
