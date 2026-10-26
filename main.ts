@@ -309,9 +309,8 @@ const pressFold = ViewPlugin.fromClass(class {
 		});
 	};
 
-	// 마우스가 글 왼쪽(편집기 왼쪽 여백, 들여쓰기, 목록 기호, 번호, 체크박스, 제목 #)에 있으면 그 자리가 나타내는 범위.
-	// 기호가 있는 들여쓰기 칸(가이드선 자리)은 그 칸에 기호가 있는 위 항목, 줄 자신의 기호와 그 왼쪽 여백은 그 줄이다
-	// (자식이 없으면 부모). 들여쓴 줄의 왼쪽 여백은 맨 바깥(들여쓰지 않은) 위 항목이다
+	// 마우스가 글 왼쪽(편집기 왼쪽 여백, 들여쓰기, 목록 기호, 번호, 체크박스, 제목 #)에 있으면 그 높이의 줄을 접는 범위
+	// (자식이 없으면 부모)
 	leftRange(x: number, y: number): { pos: number; range: Range } | null {
 		const { view } = this;
 		const { state } = view;
@@ -320,20 +319,10 @@ const pressFold = ViewPlugin.fromClass(class {
 		const pos = view.posAtCoords({ x: Math.max(x, contentLeft + 1), y });
 		if (pos === null) return null;
 		const line = visibleLine(state, pos);
-		const lead = /^(\s*)((?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?|#{1,6}\s+)?/.exec(line.text)!;
+		const lead = /^\s*((?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?|#{1,6}\s+)?/.exec(line.text)!;
 		const text = view.coordsAtPos(line.from + lead[0].length);
 		if (!text || x >= text.left) return null;
-		const indent = lead[1].length;
-		// 들여쓰기 n칸 자리의 x. 들여쓰지 않은 칸은 왼쪽 여백 전체다
-		const colX = (n: number) => n === 0 ? -Infinity : view.coordsAtPos(line.from + Math.min(n, indent))?.left ?? -Infinity;
-		let range: Range | null = null;
-		if (x >= colX(indent)) range = ownFold(state, line.from) || parentFold(state, line.from);
-		else {
-			// 그 칸에 기호가 있는 가장 가까운 위 항목(마우스보다 왼쪽에서 시작하는 첫 위 항목)
-			for (let r = parentFold(state, line.from); r; r = parentFold(state, r.from)) {
-				if (x >= colX(/^\s*/.exec(state.doc.lineAt(r.from).text)![0].length)) { range = r; break; }
-			}
-		}
+		const range = ownFold(state, line.from) || parentFold(state, line.from);
 		return range ? { pos, range } : null;
 	}
 
@@ -478,7 +467,7 @@ class SettingTab extends PluginSettingTab {
 		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 그 부모가 대상이다. 마우스가 가리키는 줄은 제자리에 남는다.");
 		if (Platform.isWin) toggle("rightWheel", "오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기", "오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다.");
 		toggle("headerButtons", "위쪽 줄에 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 끝까지 펴기, 한 단계 펴기, 한 단계 접기, 끝까지 접기 버튼을 둔다. 누를 수 없는 버튼은 흐리게 한다.");
-		toggle("leftWheel", "글 왼쪽에서 휠로 그 범위 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 자리의 범위를 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 줄 자신의 기호나 그 왼쪽 여백은 그 줄(자식이 없으면 부모), 들여쓰기 칸은 그 칸에 기호가 있는 위 항목이 범위다. 그 동안 그곳에서는 휠로 스크롤되지 않는다.");
-		toggle("leftClick", "글 왼쪽 클릭으로 그 범위 접기/펴기", "글보다 왼쪽을 클릭하면 휠과 같은 범위를 접거나 편다. 누른 채 움직이면 보통 드래그 선택이다.");
+		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄(자식이 없으면 부모)과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 그 동안 그곳에서는 휠로 스크롤되지 않는다.");
+		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄(자식이 없으면 부모)을 접거나 편다. 누른 채 움직이면 보통 드래그 선택이다.");
 	}
 }
