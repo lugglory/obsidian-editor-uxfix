@@ -1,26 +1,23 @@
-import { App, Platform, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { Annotation, EditorState, Transaction } from "@codemirror/state";
+import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { EditorState } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
 
 const LONG_PRESS = 500; // 꾹 누르기 ms
 const MOVE_SLOP = 4;    // 이만큼 넘게 움직이면 꾹 누르기가 아니다(드래그 선택)
 const SCAN_UP = 2000;   // 부모를 찾아 위로 훑는 줄 수
+const WHEEL_STEP = 100; // Alt+휠 한 단계로 치는 스크롤 양(px). 마우스 휠 한 칸이 보통 100, 터치패드는 잘게 나눠 온다
 
 interface Settings {
-	longPress: boolean;     // 꾹 누르기 = 부모 접기
-	clickToggle: boolean;   // 캐럿 자리 클릭 = 그 줄 접기/펴기
-	unfoldOnEnter: boolean; // 캐럿이 접힌 줄로 들어가면 펴기
-	siblingFold: boolean;   // 오른쪽 꾹 누르기 = 그 줄과 형제 접기(Windows)
+	longPress: boolean;   // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기)
+	clickToggle: boolean; // 캐럿 자리 클릭 = 그 줄 접기/펴기
+	altWheel: boolean;    // Alt+휠 = 마우스 자리의 형제들을 한 단계씩 펴기/접기
 }
 
-const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, unfoldOnEnter: true, siblingFold: true };
+const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, altWheel: true };
 
 // 편집기 확장들이 이벤트 때마다 읽는다: 설정을 바꾸면 바로 적용된다
 const settings: Settings = { ...DEFAULT_SETTINGS };
-
-// 우리가 낸 접기 트랜잭션: 캐럿이 옮겨져도 "접힌 줄로 들어가면 편다"에 걸리지 않게
-const ours = Annotation.define<boolean>();
 
 type Range = { from: number; to: number };
 
@@ -65,34 +62,59 @@ function lineKind(text: string): string | null {
 	return li ? "li" + li[1] : null;
 }
 
-// 그 줄과 형제(같은 부모 아래 같은 수준의 목록 항목이나 제목) 중 접을 수 있는 범위들. 부모가 없으면 문서 전체에서
-function siblingFolds(state: EditorState, pos: number): Range[] {
-	const kind = lineKind(visibleLine(state, pos).text);
-	if (!kind) return [];
-	const parent = parentFold(state, pos);
-	const end = parent ? parent.to : state.doc.length;
+// 그 범위 바로 아래(자식)의 접을 수 있는 범위들. null이면 문서 최상단
+function childFolds(state: EditorState, parent: Range | null): Range[] {
 	const out: Range[] = [];
+	const end = parent ? parent.to : state.doc.length;
 	for (let n = parent ? state.doc.lineAt(parent.from).number + 1 : 1; n <= state.doc.lines;) {
 		const l = state.doc.line(n);
 		if (l.from > end) break;
 		const r = foldable(state, l.from, l.to);
-		if (r && lineKind(l.text) === kind) out.push(r);
+		if (r) out.push(r);
 		// 접히는 줄은 그 안(자식)을 건너뛴다: 훑는 줄은 모두 부모 바로 아래 줄이다
 		n = r ? state.doc.lineAt(r.to).number + 1 : n + 1;
 	}
 	return out;
 }
 
-// 꾹 누르기 = 부모 접기(최상단이면 그 줄). 오른쪽 꾹 누르기(Windows) = 그 줄과 형제 접기.
-// 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기.
-// 접힌 줄을 짧게 클릭하면 편다(캐럿이 들어가며 unfoldOnEnter가 이미 폈으면 그대로).
+// 그 줄과 형제(같은 부모 아래 같은 수준의 목록 항목이나 제목) 중 접을 수 있는 범위들. 부모가 없으면 문서 전체에서.
+// 목록 항목도 제목도 아닌 줄이면 부모 바로 아래의 접을 수 있는 줄 모두
+function siblingFolds(state: EditorState, pos: number): Range[] {
+	const kind = lineKind(visibleLine(state, pos).text);
+	return childFolds(state, parentFold(state, pos))
+		.filter(r => kind === null || lineKind(state.doc.lineAt(r.from).text) === kind);
+}
+
+type Node = { range: Range; depth: number; folded: boolean };
+
+// 형제들과 그 자손 중 화면에 보이는 접을 수 있는 줄들(형제 = 깊이 0). 접힌 줄의 안은 보이지 않으니 넣지 않는다
+function visibleTree(state: EditorState, roots: Range[]): Node[] {
+	const out: Node[] = [];
+	const walk = (ranges: Range[], depth: number) => {
+		for (const r of ranges) {
+			const folded = foldedOn(state, r.from, r.from);
+			// 펼 때는 실제로 접혀 있는 범위 그대로 넘겨야 풀린다
+			out.push({ range: folded || r, depth, folded: folded !== null });
+			if (!folded) walk(childFolds(state, r), depth + 1);
+		}
+	};
+	walk(roots, 0);
+	return out;
+}
+
+// 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기/펴기.
+// Alt+휠 = 마우스 자리의 형제들을 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로)
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
 	cleanup: (() => void) | null = null;
 	release: (() => void) | null = null; // 꾹 누르기 뒤 holdUntilRelease가 건 것을 푼다
 	win: Window = window; // 편집기가 있는 창(분리 창일 수 있다). 타이머도 이 창에 건다
+	wheelAcc = 0;         // 아직 한 단계가 안 된 Alt+휠 양
 
-	constructor(readonly view: EditorView) {}
+	constructor(readonly view: EditorView) {
+		// 스크롤을 막아야 하니 passive가 아니게 직접 건다
+		view.scrollDOM.addEventListener("wheel", this.onWheel, { passive: false });
+	}
 
 	cancel() {
 		if (this.timer !== null) { this.win.clearTimeout(this.timer); this.timer = null; }
@@ -123,77 +145,33 @@ const pressFold = ViewPlugin.fromClass(class {
 
 	start(e: MouseEvent) {
 		this.cancel();
-		if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+		if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
 		const target = e.target as HTMLElement;
 		// 접기 화살표, 체크박스 같은 위젯은 제 동작에 맡긴다
 		if (target.closest(".cm-foldGutter, .collapse-indicator, .cm-fold-indicator, .cm-foldPlaceholder, input, button")) return;
-		if (e.button === 2) { if (Platform.isWin && settings.siblingFold) this.startRight(e); return; }
-		if (e.button !== 0) return;
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
 		if (pos === null) return;
-		const { state } = this.view;
-		const line = visibleLine(state, pos);
-		const folded = foldedOn(state, line.from, line.to);
-		const wasFolded = folded !== null;
-		// … 오른쪽을 누르면 캐럿이 접힌 범위 끝에 놓인다. 누를 때 펴면 CodeMirror가 뗄 때 바뀐 자리로
-		// 선택을 다시 잡아 블록 전체가 선택되니, unfoldOnEnter 대신 여기서 뗀 뒤에 편다
-		const atFoldEnd = settings.unfoldOnEnter && folded !== null && pos > folded.from;
 		// 편집기에 포커스가 있고 캐럿이 바로 그 자리: 캐럿이 옮겨지지 않는 클릭
 		// (포커스가 없을 때의 클릭은 편집기로 돌아오는 클릭이라 치지 않는다)
-		const sel = state.selection.main;
+		const sel = this.view.state.selection.main;
 		const inPlace = settings.clickToggle && this.view.hasFocus && sel.empty && sel.head === pos && e.detail === 1;
-		if (!settings.longPress && !inPlace && !atFoldEnd) return;
+		if (!settings.longPress && !inPlace) return;
 		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
 		// 여기까지 오면 움직이지 않고 뗀 것이다(움직이거나 꾹 누르기가 되면 cancel이 이 리스너를 뗀다)
-		this.track(win, e, () => {
-			// 캐럿이 그대로면 CodeMirror가 선택을 내지 않아 unfoldOnEnter도 돌지 않는다: 여기서 접거나 편다.
-			// CodeMirror가 뗄 때 선택을 다시 잡은 뒤에 한다(그 전에 자리가 바뀌면 엉뚱한 범위가 잡힌다)
-			if (inPlace || atFoldEnd) win.setTimeout(() => { if (wasFolded) this.unfold(pos); else this.fold(pos, false); }, 0);
-		});
+		this.track(win, e, () => { if (inPlace) this.toggle(pos, false); });
 		if (!settings.longPress) return;
 		this.timer = win.setTimeout(() => {
 			this.timer = null;
 			this.cancel();
 			this.holdUntilRelease(win);
-			// 부모가 있으면 접힌 줄이어도 부모를 접는다. 최상단의 접힌 줄은 편다
-			// (보통은 누르는 순간 캐럿이 들어가며 이미 펴졌다: 다시 접으면 누른 보람이 없다)
-			if (wasFolded && pos <= this.view.state.doc.length && !parentFold(this.view.state, pos)) this.unfold(pos);
-			else this.fold(pos, true);
-		}, LONG_PRESS);
-	}
-
-	// 오른쪽 꾹 누르기 = 그 줄과 형제 접기. Windows만: 오른쪽 클릭 메뉴가 뗄 때 떠서 그 전에 잴 수 있다
-	// (macOS, Linux는 누르는 순간 뜬다). 짧게 누르면 보통 메뉴
-	startRight(e: MouseEvent) {
-		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
-		if (pos === null) return;
-		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
-		this.track(win, e, () => {});
-		this.timer = win.setTimeout(() => {
-			this.timer = null;
-			this.cancel();
-			this.swallowMenu(win);
-			this.foldSiblings(pos);
+			this.toggle(pos, true);
 		}, LONG_PRESS);
 	}
 
 	onScroll = () => this.cancel();
 
-	// 오른쪽 꾹 누르기가 된 뒤 뗄 때 뜨는 메뉴를 삼킨다. 메뉴 신호를 놓쳤어도 새로 누르면 푼다
-	swallowMenu(win: Window) {
-		const stop = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); off(); };
-		const off = () => {
-			win.removeEventListener("contextmenu", stop, true);
-			win.removeEventListener("mousedown", off, true);
-			this.release = null;
-		};
-		win.addEventListener("contextmenu", stop, true);
-		win.addEventListener("mousedown", off, true);
-		this.release = off;
-	}
-
-	// 꾹 누르기가 된 뒤 손을 뗄 때까지: 마우스 움직임을 CodeMirror의 드래그 선택에 보내지 않고(접혀서 자리가
-	// 바뀐 문서에 엉뚱한 범위가 잡힌다), 뗄 때의 클릭도 삼킨다(링크 위였으면 열리지 않게).
+	// 꾹 누르기가 된 뒤 손을 뗄 때까지: 마우스 움직임을 CodeMirror의 드래그 선택에 보내지 않고(접히거나 펴져서
+	// 자리가 바뀐 문서에 엉뚱한 범위가 잡힌다), 뗄 때의 클릭도 삼킨다(링크 위였으면 열리지 않게).
 	// 떼는 신호를 놓쳤어도 새로 누르면 이전 누름은 끝난 것이니 바로 푼다(그 클릭은 삼키지 않는다)
 	holdUntilRelease(win: Window) {
 		const block = (ev: Event) => ev.stopPropagation();
@@ -218,58 +196,67 @@ const pressFold = ViewPlugin.fromClass(class {
 		this.release = off;
 	}
 
-	// parent면 부모를, 부모가 없으면(최상단) 그 줄을 접는다
-	fold(pos: number, parent: boolean) {
+	onWheel = (e: WheelEvent) => {
+		if (!settings.altWheel || !e.altKey || e.ctrlKey || e.shiftKey || e.metaKey) return;
+		e.preventDefault();
+		const delta = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+		// 방향이 바뀌면 쌓인 양을 버린다
+		if (Math.sign(delta) !== Math.sign(this.wheelAcc)) this.wheelAcc = 0;
+		this.wheelAcc += delta;
+		if (Math.abs(this.wheelAcc) < WHEEL_STEP) return;
+		const open = this.wheelAcc < 0; // 위로 = 펴기
+		this.wheelAcc = 0;
+		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
+		if (pos !== null) this.step(pos, open);
+	};
+
+	// 형제들을 지금 상태에서 한 단계: 펴기는 보이는 접힌 줄 중 가장 얕은 깊이를 모두 펴고,
+	// 접기는 보이는 펼친 줄 중 가장 깊은 깊이를 모두 접는다(마지막엔 형제들 자신이 접힌다)
+	step(pos: number, open: boolean) {
 		const { state } = this.view;
-		if (pos > state.doc.length) return;
-		const r = (parent && parentFold(state, pos)) || ownFold(state, pos);
-		if (!r) return;
-		// 캐럿이 접히는 안쪽에 있으면 접은 줄 끝으로
-		const head = state.selection.main.head;
-		const inside = head > r.from && head <= r.to;
-		this.view.dispatch({
-			effects: foldEffect.of(r),
-			selection: inside ? { anchor: r.from } : undefined,
-			annotations: ours.of(true),
-		});
+		const nodes = visibleTree(state, siblingFolds(state, pos)).filter(n => n.folded === open);
+		if (!nodes.length) return;
+		const depth = nodes.reduce((d, n) => open ? Math.min(d, n.depth) : Math.max(d, n.depth), nodes[0].depth);
+		const ranges = nodes.filter(n => n.depth === depth).map(n => n.range);
+		if (open) this.view.dispatch({ effects: ranges.map(r => unfoldEffect.of(r)) });
+		else this.foldRanges(ranges);
 	}
 
-	// 그 줄과 형제 중 아직 안 접힌 것을 모두 접는다
-	foldSiblings(pos: number) {
+	// 접혀 있으면 편다. 아니면 그 줄을 접고, 자식이 없으면 parentIfLeaf일 때 부모를 접는다
+	toggle(pos: number, parentIfLeaf: boolean) {
 		const { state } = this.view;
 		if (pos > state.doc.length) return;
-		const ranges = siblingFolds(state, pos).filter(r => !foldedOn(state, r.from, r.from));
-		if (!ranges.length) return;
-		// 캐럿이 접히는 안쪽에 있으면 그 줄 끝으로
-		const head = state.selection.main.head;
+		const line = visibleLine(state, pos);
+		const folded = foldedOn(state, line.from, line.to);
+		if (folded) { this.unfold(folded); return; }
+		const r = ownFold(state, pos) || (parentIfLeaf ? parentFold(state, pos) : null);
+		if (r) this.foldRanges([r]);
+	}
+
+	// 캐럿이 접히는 안쪽에 남으면 CodeMirror가 다음 캐럿 이동 때 그 접기를 풀어 버린다: 접은 줄 끝으로 뺀다
+	foldRanges(ranges: Range[]) {
+		const head = this.view.state.selection.main.head;
 		const hit = ranges.find(r => head > r.from && head <= r.to);
 		this.view.dispatch({
 			effects: ranges.map(r => foldEffect.of(r)),
 			selection: hit ? { anchor: hit.from } : undefined,
-			annotations: ours.of(true),
 		});
 	}
 
-	// 아직 접혀 있으면 편다(누르는 순간 캐럿이 들어가며 이미 펴졌으면 아무것도 안 한다).
 	// 캐럿이 … 오른쪽(접힌 범위 끝)이면 펴진 블록 맨 끝으로 가지 않게 접혔던 줄 끝에 둔다
-	unfold(pos: number) {
-		const { state } = this.view;
-		if (pos > state.doc.length) return;
-		const line = visibleLine(state, pos);
-		const r = foldedOn(state, line.from, line.to);
-		if (!r) return;
-		const head = state.selection.main.head;
-		const atEnd = state.selection.main.empty && head > r.from && head <= r.to;
+	unfold(r: Range) {
+		const sel = this.view.state.selection.main;
+		const atEnd = sel.empty && sel.head > r.from && sel.head <= r.to;
 		this.view.dispatch({
 			effects: unfoldEffect.of(r),
 			selection: atEnd ? { anchor: r.from } : undefined,
-			annotations: ours.of(true),
 		});
 	}
 
 	destroy() {
 		this.cancel();
 		if (this.release) this.release();
+		this.view.scrollDOM.removeEventListener("wheel", this.onWheel);
 	}
 }, {
 	eventHandlers: {
@@ -277,31 +264,15 @@ const pressFold = ViewPlugin.fromClass(class {
 	},
 });
 
-// 캐럿이 접힌 줄이나 그 자식으로 들어가면 편다. 범위 선택 중이거나 문서가 바뀐 트랜잭션은 건드리지 않는다
-const unfoldOnEnter = EditorState.transactionExtender.of((tr: Transaction) => {
-	if (!settings.unfoldOnEnter) return null;
-	if (!tr.selection || tr.docChanged || tr.annotation(ours)) return null;
-	const sel = tr.selection.main;
-	if (!sel.empty) return null;
-	const before = tr.startState;
-	const line = visibleLine(before, sel.head);
-	const r = foldedOn(before, line.from, line.to);
-	if (!r) return null;
-	const pointer = tr.isUserEvent("select.pointer");
-	// 자식(… 오른쪽, 접힌 범위 끝)에 놓이면 어떻게 왔든(화살표, 검색, 이동 명령) 편다. 클릭이면 pressFold가 뗀 뒤에 편다
-	// (자식 한가운데는 CodeMirror가 알아서 편다)
-	if (sel.head > r.from) return pointer ? null : { effects: unfoldEffect.of(r) };
-	// 접힌 줄 자체는 사용자가 옮긴 캐럿만. 화살표는 다른 줄에서 왔을 때만, 클릭은 이미 그 줄에 있어도(접은 뒤 다시 누르면 편다)
-	if (!tr.isUserEvent("select")) return null;
-	const moved = line.number !== visibleLine(before, before.selection.main.head).number;
-	return moved || pointer ? { effects: unfoldEffect.of(r) } : null;
-});
-
 export default class EditorUxfixPlugin extends Plugin {
 	async onload() {
-		Object.assign(settings, DEFAULT_SETTINGS, await this.loadData());
+		// 없어진 설정 항목이 남아 있어도 읽지 않는다
+		const saved = (await this.loadData()) || {};
+		for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
+			if (typeof saved[key] === "boolean") settings[key] = saved[key];
+		}
 		this.addSettingTab(new SettingTab(this.app, this));
-		this.registerEditorExtension([pressFold, unfoldOnEnter]);
+		this.registerEditorExtension([pressFold]);
 	}
 
 	async saveSettings() { await this.saveData(settings); }
@@ -317,9 +288,8 @@ class SettingTab extends PluginSettingTab {
 			new Setting(containerEl).setName(name).setDesc(desc).addToggle(t => t
 				.setValue(settings[key])
 				.onChange(async v => { settings[key] = v; await this.plugin.saveSettings(); }));
-		toggle("longPress", "꾹 누르기로 부모 접기", "줄을 0.5초 누르면 그 줄을 품은 부모 항목이나 제목을 접는다. 부모가 없으면 그 줄을 접는다.");
+		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.5초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다.");
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
-		toggle("unfoldOnEnter", "캐럿이 들어가면 펴기", "화살표나 클릭으로 캐럿이 접힌 줄에 들어가면 편다.");
-		if (Platform.isWin) toggle("siblingFold", "오른쪽 꾹 누르기로 형제 접기", "줄을 오른쪽 버튼으로 0.5초 누르면 그 줄과 같은 수준의 형제 항목이나 제목을 모두 접는다. 짧게 누르면 보통 메뉴가 뜬다.");
+		toggle("altWheel", "Alt+휠로 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 형제들을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 최상단 줄 위에서 굴리면 문서 전체가 대상이다.");
 	}
 }
