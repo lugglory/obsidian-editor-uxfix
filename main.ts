@@ -1,6 +1,6 @@
 import { App, MarkdownView, Platform, Plugin, PluginSettingTab, Setting, editorInfoField } from "obsidian";
-import { EditorState } from "@codemirror/state";
-import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
+import { EditorState, Line, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
+import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
 
 const LONG_PRESS = 400; // 꾹 누르기 ms
@@ -29,6 +29,17 @@ const refreshers = new Set<() => void>();
 const refreshAll = () => refreshers.forEach(f => f());
 
 type Range = { from: number; to: number };
+
+// 글 왼쪽에 마우스를 올렸을 때 옅게 칠하는 범위(그 줄과 그 안)
+const setHover = StateEffect.define<Range | null>();
+const hoverField = StateField.define<Range | null>({
+	create: () => null,
+	update(v, tr) {
+		for (const e of tr.effects) if (e.is(setHover)) return e.value;
+		return tr.docChanged ? null : v; // 글이 바뀌면 다음 마우스 움직임에서 다시 잡는다
+	},
+});
+const hoverLine = Decoration.line({ attributes: { style: "background-color: var(--background-modifier-hover)" } });
 
 // 그 줄 끝에서 시작하는 접힌 범위
 function foldedOn(state: EditorState, lineFrom: number, lineTo: number): Range | null {
@@ -110,12 +121,19 @@ const pressFold = ViewPlugin.fromClass(class {
 	frame: number | null = null; // keepLine이 높이를 맞출 프레임
 	buttons: { md: MarkdownView; open: HTMLElement; fold: HTMLElement; openAll: HTMLElement; foldAll: HTMLElement } | null = null;
 	refreshTimer: number | null = null;
+	decorations: DecorationSet = Decoration.none; // 호버 칠하기
+	mouse: { x: number; y: number } | null = null; // 편집기 위의 마지막 마우스 자리(버튼을 누르지 않았을 때)
+	hoverFrame: number | null = null;
 
 	constructor(readonly view: EditorView) {
 		// 스크롤을 막아야 하니 passive가 아니게 직접 건다
 		view.scrollDOM.addEventListener("wheel", this.onWheel, { passive: false });
 		// 글 왼쪽 여백은 글 영역(contentDOM) 밖이라 스크롤 영역에서 받는다. CodeMirror가 캐럿을 옮기기 전에 봐야 하니 capture로
 		view.scrollDOM.addEventListener("mousedown", this.onDown, true);
+		view.scrollDOM.addEventListener("mousemove", this.onHoverMove, { passive: true });
+		view.scrollDOM.addEventListener("mouseleave", this.onHoverLeave, { passive: true });
+		// 스크롤하거나 접고 펴면 마우스 아래 줄이 바뀐다
+		view.scrollDOM.addEventListener("scroll", this.hoverSoon, { passive: true });
 		refreshers.add(this.refresh);
 		// 편집기가 막 만들어진 때라 그 노트 창이 아직 준비되지 않았을 수 있다
 		window.setTimeout(this.refresh, 0);
@@ -197,7 +215,52 @@ const pressFold = ViewPlugin.fromClass(class {
 			// 글자를 칠 때마다 문서를 훑지 않게, 입력이 멈추면 버튼을 다시 본다
 			if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
 			this.refreshTimer = window.setTimeout(this.refresh, 300);
-		} else if (foldedRanges(u.startState) !== foldedRanges(u.state)) this.refresh();
+		} else if (foldedRanges(u.startState) !== foldedRanges(u.state)) { this.refresh(); this.hoverSoon(); }
+		if (u.docChanged || u.viewportChanged || u.startState.field(hoverField, false) !== u.state.field(hoverField, false))
+			this.decorations = this.hoverDecorations();
+	}
+
+	onHoverMove = (e: MouseEvent) => {
+		if (e.buttons !== 0) return; // 드래그 선택하는 동안은 그대로 둔다
+		this.mouse = { x: e.clientX, y: e.clientY };
+		this.hoverSoon();
+	};
+
+	onHoverLeave = () => { this.mouse = null; this.hoverSoon(); };
+
+	// 마우스 아래가 글 왼쪽(휠, 클릭이 되는 곳)이면 그 줄과 그 안을 칠한다. 줄 위치를 재야 하니 업데이트 밖에서, 한 프레임에 한 번
+	hoverSoon = () => {
+		if (this.hoverFrame !== null) return;
+		this.hoverFrame = (this.view.dom.ownerDocument.defaultView || window).requestAnimationFrame(() => {
+			this.hoverFrame = null;
+			const m = this.mouse;
+			const hit = m && (settings.leftWheel || settings.leftClick) ? this.leftRange(m.x, m.y) : null;
+			let next: Range | null = null;
+			if (hit) {
+				const own = ownFold(this.view.state, hit.line.from);
+				next = { from: hit.line.from, to: own ? Math.max(own.to, hit.line.to) : hit.line.to };
+			}
+			const cur = this.view.state.field(hoverField, false);
+			if (cur === undefined || (cur?.from === next?.from && cur?.to === next?.to)) return;
+			this.view.dispatch({ effects: setHover.of(next) });
+		});
+	};
+
+	// 칠할 범위 중 화면에 그려진 줄만. 접힌 줄 안은 접힌 줄로 친다
+	hoverDecorations(): DecorationSet {
+		const h = this.view.state.field(hoverField, false);
+		if (!h) return Decoration.none;
+		const { state } = this.view;
+		const b = new RangeSetBuilder<Decoration>();
+		let last = -1;
+		for (const { from, to } of this.view.visibleRanges) {
+			for (let pos = Math.max(from, h.from); pos <= Math.min(to, h.to);) {
+				const l = visibleLine(state, pos);
+				if (l.from > last) { b.add(l.from, l.from, hoverLine); last = l.from; }
+				pos = state.doc.lineAt(pos).to + 1;
+			}
+		}
+		return b.finish();
 	}
 
 	// 누르는 동안: 움직이거나, 스크롤하거나, 창을 벗어나면(Alt+Tab 등: 떼는 신호를 못 받을 수 있다)
@@ -319,7 +382,7 @@ const pressFold = ViewPlugin.fromClass(class {
 
 	// 마우스가 글 왼쪽(편집기 왼쪽 여백, 들여쓰기, 목록 기호, 번호, 체크박스, 제목 #)에 있으면 그 높이의 줄을 접는 범위
 	// (자식이 없으면 부모)
-	leftRange(x: number, y: number): { pos: number; range: Range } | null {
+	leftRange(x: number, y: number): { pos: number; line: Line; range: Range } | null {
 		const { view } = this;
 		const { state } = view;
 		// 여백에서는 글이 없으니 같은 높이의 글 쪽 자리로 줄을 찾는다
@@ -331,7 +394,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		const text = view.coordsAtPos(line.from + lead[0].length);
 		if (!text || x >= text.left) return null;
 		const range = ownFold(state, line.from) || parentFold(state, line.from);
-		return range ? { pos, range } : null;
+		return range ? { pos, line, range } : null;
 	}
 
 	// 오른쪽 버튼을 누른 채 휠을 굴렸으면 버튼을 뗄 때 뜨는 메뉴를 막는다.
@@ -441,7 +504,13 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (this.buttons) for (const el of [this.buttons.open, this.buttons.fold, this.buttons.openAll, this.buttons.foldAll]) el.remove();
 		this.view.scrollDOM.removeEventListener("wheel", this.onWheel);
 		this.view.scrollDOM.removeEventListener("mousedown", this.onDown, true);
+		this.view.scrollDOM.removeEventListener("mousemove", this.onHoverMove);
+		this.view.scrollDOM.removeEventListener("mouseleave", this.onHoverLeave);
+		this.view.scrollDOM.removeEventListener("scroll", this.hoverSoon);
+		if (this.hoverFrame !== null) (this.view.dom.ownerDocument.defaultView || window).cancelAnimationFrame(this.hoverFrame);
 	}
+}, {
+	decorations: v => v.decorations,
 });
 
 export default class EditorUxfixPlugin extends Plugin {
@@ -452,7 +521,7 @@ export default class EditorUxfixPlugin extends Plugin {
 			if (typeof saved[key] === "boolean") settings[key] = saved[key];
 		}
 		this.addSettingTab(new SettingTab(this.app, this));
-		this.registerEditorExtension([pressFold]);
+		this.registerEditorExtension([hoverField, pressFold]);
 		// 읽기 모드로 바꾸면 버튼을 감춘다
 		this.registerEvent(this.app.workspace.on("layout-change", refreshAll));
 	}
