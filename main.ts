@@ -6,16 +6,17 @@ import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/la
 const LONG_PRESS = 400; // 꾹 누르기 ms
 const MOVE_SLOP = 4;    // 이만큼 넘게 움직이면 꾹 누르기가 아니다(드래그 선택)
 const SCAN_UP = 2000;   // 부모를 찾아 위로 훑는 줄 수
-const WHEEL_STEP = 100; // Alt+휠 한 단계로 치는 스크롤 양(px). 마우스 휠 한 칸이 보통 100, 터치패드는 잘게 나눠 온다
+const WHEEL_STEP = 100; // 휠 한 단계로 치는 스크롤 양(px). 마우스 휠 한 칸이 보통 100, 터치패드는 잘게 나눠 온다
+const WHEEL_IDLE = 300; // 이만큼(ms) 휠이 멈추면 덜 찬 양을 버린다
 
 interface Settings {
 	longPress: boolean;   // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기)
 	clickToggle: boolean; // 캐럿 자리 클릭 = 그 줄 접기/펴기
 	altWheel: boolean;      // Alt+휠 = 마우스 자리의 줄을 한 단계씩 펴기/접기
 	rightWheel: boolean;    // 오른쪽 버튼을 누른 채 휠 = Alt+휠(윈도우즈)
-	headerButtons: boolean; // 편집기 위쪽 줄의 한 단계 펴기/접기 버튼
-	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠 = 그 자리 범위를 한 단계씩 펴기/접기
-	leftClick: boolean;     // 글 왼쪽 클릭 = 그 자리 범위 접기/펴기
+	headerButtons: boolean; // 편집기 위쪽 줄의 끝까지/한 단계 펴기/접기 버튼
+	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠 = Alt+휠
+	leftClick: boolean;     // 글 왼쪽 클릭 = 그 높이의 줄(자식이 없으면 부모) 접기/펴기
 }
 
 const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, altWheel: true, rightWheel: true, headerButtons: true, leftWheel: true, leftClick: true };
@@ -102,7 +103,8 @@ const pressFold = ViewPlugin.fromClass(class {
 	cleanup: (() => void) | null = null;
 	release: (() => void) | null = null; // 꾹 누르기 뒤 holdUntilRelease가 건 것을 푼다
 	win: Window = window; // 편집기가 있는 창(분리 창일 수 있다). 타이머도 이 창에 건다
-	wheelAcc = 0;         // 아직 한 단계가 안 된 Alt+휠 양
+	wheelAcc = 0;         // 아직 한 단계가 안 된 휠 양
+	wheelAt = 0;          // 마지막 휠 시각
 	anchor: { pos: number; top: number } | null = null; // keepLine: 화면에 붙들어 둘 줄과 그 원래 높이
 	unblockMenu: (() => void) | null = null; // blockMenu가 건 것을 푼다
 	frame: number | null = null; // keepLine이 높이를 맞출 프레임
@@ -159,7 +161,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		this.view.dispatch({ effects: ranges.map(r => unfoldEffect.of(r)), selection: hit ? { anchor: hit.from } : undefined });
 	}
 
-	// 누를 수 없는 버튼은 흐리게 한다(감추면 옆 버튼 자리가 바뀐다). 읽기 모드에서는 둘 다 감춘다
+	// 누를 수 없는 버튼은 흐리게 한다(감추면 옆 버튼 자리가 바뀐다). 읽기 모드에서는 모두 감춘다
 	refresh = () => {
 		if (this.refreshTimer !== null) { window.clearTimeout(this.refreshTimer); this.refreshTimer = null; }
 		this.attach();
@@ -225,7 +227,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		const target = e.target as HTMLElement;
 		// 접기 화살표, 체크박스 같은 위젯은 제 동작에 맡긴다
 		if (target.closest(".cm-foldGutter, .collapse-indicator, .cm-fold-indicator, .cm-foldPlaceholder, input, button")) return;
-		// 글 왼쪽 클릭 = 그 자리 범위 접기/펴기(꾹 누르기는 치지 않는다). 움직이면 보통 드래그 선택이다
+		// 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기(꾹 누르기는 치지 않는다). 움직이면 보통 드래그 선택이다
 		const local = settings.leftClick && e.detail === 1 ? this.leftRange(e.clientX, e.clientY) : null;
 		if (local) {
 			const win = this.win = this.view.dom.ownerDocument.defaultView || window;
@@ -284,7 +286,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		// 오른쪽 버튼을 누른 채 굴리기 = Alt+휠. 윈도우즈만: 오른쪽 클릭 메뉴가 버튼을 뗄 때 떠서 그때 막을 수 있다
 		// (맥, 리눅스는 누르는 순간 뜬다)
 		const right = !e.altKey && (e.buttons & 2) !== 0 && Platform.isWin && settings.rightWheel;
-		// 글 왼쪽에서는 키 없이도 그 자리 범위. Shift+휠(가로 스크롤)은 그대로 둔다
+		// 글 왼쪽에서는 키 없이도. Shift+휠(가로 스크롤)은 그대로 둔다
 		const local = settings.leftWheel && (!e.shiftKey || e.altKey) ? this.leftRange(e.clientX, e.clientY) : null;
 		if (!local && !(e.altKey ? settings.altWheel : right)) return;
 		e.preventDefault();
@@ -292,8 +294,9 @@ const pressFold = ViewPlugin.fromClass(class {
 		// Shift를 같이 누르면 브라우저가 가로 스크롤로 바꿔 deltaX로 보낸다
 		const raw = e.deltaY !== 0 ? e.deltaY : e.deltaX;
 		const delta = e.deltaMode === 1 ? raw * 40 : e.deltaMode === 2 ? raw * 800 : raw;
-		// 방향이 바뀌면 쌓인 양을 버린다
-		if (Math.sign(delta) !== Math.sign(this.wheelAcc)) this.wheelAcc = 0;
+		// 방향이 바뀌거나 한동안 멈췄으면 쌓인 양을 버린다(한참 전에 조금 굴린 것이 다음 휠에 더해지지 않게)
+		if (Math.sign(delta) !== Math.sign(this.wheelAcc) || e.timeStamp - this.wheelAt > WHEEL_IDLE) this.wheelAcc = 0;
+		this.wheelAt = e.timeStamp;
 		this.wheelAcc += delta;
 		if (Math.abs(this.wheelAcc) < WHEEL_STEP) return;
 		const open = this.wheelAcc < 0; // 위로 = 펴기
