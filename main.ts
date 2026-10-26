@@ -1,6 +1,6 @@
 import { Plugin } from "obsidian";
-import { Annotation, EditorState, StateEffect, Transaction } from "@codemirror/state";
-import { EditorView, ViewPlugin } from "@codemirror/view";
+import { Annotation, EditorState, Transaction } from "@codemirror/state";
+import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
 
 const LONG_PRESS = 500; // 꾹 누르기 ms
@@ -21,11 +21,11 @@ function foldedOn(state: EditorState, lineFrom: number, lineTo: number): Range |
 	return found;
 }
 
-// 꾹 누른 줄의 접을 범위: 그 줄이 접히면 그 줄, 아니면(잎) 그 줄을 품은 가장 가까운 위 줄(부모 목록 항목, 제목)
-function foldTarget(state: EditorState, pos: number): Range | null {
+// 접을 범위: 그 줄이 접히면 그 줄. withParent면 잎일 때 그 줄을 품은 가장 가까운 위 줄(부모 목록 항목, 제목)
+function foldTarget(state: EditorState, pos: number, withParent: boolean): Range | null {
 	const line = state.doc.lineAt(pos);
 	const own = foldable(state, line.from, line.to);
-	if (own) return own;
+	if (own || !withParent) return own;
 	for (let n = line.number - 1; n >= 1 && line.number - n <= SCAN_UP; n--) {
 		const l = state.doc.line(n);
 		const r = foldable(state, l.from, l.to);
@@ -34,14 +34,9 @@ function foldTarget(state: EditorState, pos: number): Range | null {
 	return null;
 }
 
-function swallowNextClick() {
-	const stop = (e: Event) => { e.preventDefault(); e.stopPropagation(); };
-	window.addEventListener("click", stop, { capture: true, once: true });
-	window.setTimeout(() => window.removeEventListener("click", stop, { capture: true }), 400);
-}
-
-// 꾹 누르기 = 접기. 접힌 줄을 누르면 누르는 순간(캐럿이 들어가며) 펴지므로 꾹 눌러도 다시 접지 않는다
-const longPress = ViewPlugin.fromClass(class {
+// 꾹 누르기 = 접기(잎이면 부모). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기.
+// 접힌 줄이면 어느 쪽이든 편다(캐럿이 들어가며 unfoldOnEnter가 이미 폈으면 그대로).
+const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
 	cleanup: (() => void) | null = null;
 
@@ -51,6 +46,9 @@ const longPress = ViewPlugin.fromClass(class {
 		if (this.timer !== null) { window.clearTimeout(this.timer); this.timer = null; }
 		if (this.cleanup) { this.cleanup(); this.cleanup = null; }
 	}
+
+	// 누르는 사이 문서가 바뀌면(동기화 등) 잰 자리가 틀리니 그만둔다
+	update(u: ViewUpdate) { if (u.docChanged) this.cancel(); }
 
 	start(e: MouseEvent) {
 		this.cancel();
@@ -63,49 +61,75 @@ const longPress = ViewPlugin.fromClass(class {
 		const { state } = this.view;
 		const line = state.doc.lineAt(pos);
 		const wasFolded = foldedOn(state, line.from, line.to) !== null;
-		// 캐럿이 있는 바로 그 자리를 누름: 캐럿이 옮겨지지 않으니 짧은 클릭이면 접기
+		// 편집기에 포커스가 있고 캐럿이 바로 그 자리: 캐럿이 옮겨지지 않는 클릭
+		// (포커스가 없을 때의 클릭은 편집기로 돌아오는 클릭이라 치지 않는다)
 		const sel = state.selection.main;
-		const inPlace = sel.empty && sel.head === pos && e.detail === 1;
+		const inPlace = this.view.hasFocus && sel.empty && sel.head === pos && e.detail === 1;
 		const x = e.clientX, y = e.clientY;
-		const doc = this.view.dom.ownerDocument;
+		const win = this.view.dom.ownerDocument.defaultView || window;
 		const onMove = (m: MouseEvent) => { if (Math.abs(m.clientX - x) > MOVE_SLOP || Math.abs(m.clientY - y) > MOVE_SLOP) this.cancel(); };
 		const onUp = () => {
 			const shortClick = this.timer !== null; // 꾹 누르기가 되기 전에, 움직이지 않고 뗐다
 			this.cancel();
-			// 접힌 줄이었으면 누르는 순간 이미 펴졌다
-			if (shortClick && inPlace && !wasFolded) this.fold(pos);
+			// 캐럿이 그대로면 CodeMirror가 선택을 내지 않아 unfoldOnEnter도 돌지 않는다: 여기서 접거나 편다
+			if (shortClick && inPlace) { if (wasFolded) this.unfold(pos); else this.fold(pos, false); }
 		};
-		doc.addEventListener("mousemove", onMove);
-		doc.addEventListener("mouseup", onUp);
-		this.view.scrollDOM.addEventListener("scroll", onUp, { passive: true });
+		win.addEventListener("mousemove", onMove, true);
+		win.addEventListener("mouseup", onUp, true);
+		this.view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
 		this.cleanup = () => {
-			doc.removeEventListener("mousemove", onMove);
-			doc.removeEventListener("mouseup", onUp);
-			this.view.scrollDOM.removeEventListener("scroll", onUp);
+			win.removeEventListener("mousemove", onMove, true);
+			win.removeEventListener("mouseup", onUp, true);
+			this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
 		};
 		this.timer = window.setTimeout(() => {
 			this.timer = null;
 			this.cancel();
-			swallowNextClick(); // 링크 위에서 꾹 눌렀으면 뗄 때 열리지 않게
-			if (wasFolded) return; // 이미 누르는 순간 펴졌다
-			this.fold(pos);
+			this.holdUntilRelease(win);
+			if (wasFolded) this.unfold(pos); else this.fold(pos, true);
 		}, LONG_PRESS);
 	}
 
-	fold(pos: number) {
+	onScroll = () => this.cancel();
+
+	// 꾹 누르기가 된 뒤 손을 뗄 때까지: 마우스 움직임을 CodeMirror의 드래그 선택에 보내지 않고(접혀서 자리가
+	// 바뀐 문서에 엉뚱한 범위가 잡힌다), 뗄 때의 클릭도 삼킨다(링크 위였으면 열리지 않게)
+	holdUntilRelease(win: Window) {
+		const block = (ev: Event) => ev.stopPropagation();
+		const stop = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); };
+		const release = () => {
+			win.removeEventListener("mousemove", block, true);
+			win.removeEventListener("mouseup", release, true);
+			// click은 mouseup 바로 뒤에 온다
+			win.setTimeout(() => win.removeEventListener("click", stop, true), 0);
+		};
+		win.addEventListener("mousemove", block, true);
+		win.addEventListener("mouseup", release, true);
+		win.addEventListener("click", stop, true);
+	}
+
+	fold(pos: number, withParent: boolean) {
 		const { state } = this.view;
 		if (pos > state.doc.length) return;
-		const r = foldTarget(state, pos);
+		const r = foldTarget(state, pos, withParent);
 		if (!r) return;
-		const head = state.selection.main.head;
-		const effects: StateEffect<unknown>[] = [foldEffect.of(r)];
 		// 캐럿이 접히는 안쪽에 있으면 접은 줄 끝으로
+		const head = state.selection.main.head;
 		const inside = head > r.from && head <= r.to;
 		this.view.dispatch({
-			effects,
+			effects: foldEffect.of(r),
 			selection: inside ? { anchor: r.from } : undefined,
 			annotations: ours.of(true),
 		});
+	}
+
+	// 아직 접혀 있으면 편다(누르는 순간 캐럿이 들어가며 이미 펴졌으면 아무것도 안 한다)
+	unfold(pos: number) {
+		const { state } = this.view;
+		if (pos > state.doc.length) return;
+		const line = state.doc.lineAt(pos);
+		const r = foldedOn(state, line.from, line.to);
+		if (r) this.view.dispatch({ effects: unfoldEffect.of(r), annotations: ours.of(true) });
 	}
 
 	destroy() { this.cancel(); }
@@ -132,6 +156,6 @@ const unfoldOnEnter = EditorState.transactionExtender.of((tr: Transaction) => {
 
 export default class LinetreePlugin extends Plugin {
 	async onload() {
-		this.registerEditorExtension([longPress, unfoldOnEnter]);
+		this.registerEditorExtension([pressFold, unfoldOnEnter]);
 	}
 }
