@@ -3,7 +3,7 @@
   "name": "Editor UX Fix",
   "version": "0.1.0",
   "minAppVersion": "1.6.6",
-  "description": "Long-press a line to fold it; moving the cursor onto a folded line unfolds it.",
+  "description": "Long-press a line to fold its parent; click where the caret is to fold or unfold the line; moving the caret onto a folded line unfolds it.",
   "author": "Hyunyoung Park",
   "authorUrl": "",
   "isDesktopOnly": true

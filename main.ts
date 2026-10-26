@@ -1,4 +1,4 @@
-import { Plugin } from "obsidian";
+import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { Annotation, EditorState, Transaction } from "@codemirror/state";
 import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
@@ -6,6 +6,17 @@ import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/la
 const LONG_PRESS = 500; // 꾹 누르기 ms
 const MOVE_SLOP = 4;    // 이만큼 넘게 움직이면 꾹 누르기가 아니다(드래그 선택)
 const SCAN_UP = 2000;   // 부모를 찾아 위로 훑는 줄 수
+
+interface Settings {
+	longPress: boolean;     // 꾹 누르기 = 부모 접기
+	clickToggle: boolean;   // 캐럿 자리 클릭 = 그 줄 접기/펴기
+	unfoldOnEnter: boolean; // 캐럿이 접힌 줄로 들어가면 펴기
+}
+
+const DEFAULT_SETTINGS: Settings = { longPress: true, clickToggle: true, unfoldOnEnter: true };
+
+// 편집기 확장들이 이벤트 때마다 읽는다: 설정을 바꾸면 바로 적용된다
+const settings: Settings = { ...DEFAULT_SETTINGS };
 
 // 우리가 낸 접기 트랜잭션: 캐럿이 옮겨져도 "접힌 줄로 들어가면 편다"에 걸리지 않게
 const ours = Annotation.define<boolean>();
@@ -59,6 +70,7 @@ const pressFold = ViewPlugin.fromClass(class {
 	start(e: MouseEvent) {
 		this.cancel();
 		if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+		if (!settings.longPress && !settings.clickToggle) return;
 		const target = e.target as HTMLElement;
 		// 접기 화살표, 체크박스 같은 위젯은 제 동작에 맡긴다
 		if (target.closest(".cm-foldGutter, .collapse-indicator, .cm-fold-indicator, .cm-foldPlaceholder, input, button")) return;
@@ -70,15 +82,16 @@ const pressFold = ViewPlugin.fromClass(class {
 		// 편집기에 포커스가 있고 캐럿이 바로 그 자리: 캐럿이 옮겨지지 않는 클릭
 		// (포커스가 없을 때의 클릭은 편집기로 돌아오는 클릭이라 치지 않는다)
 		const sel = state.selection.main;
-		const inPlace = this.view.hasFocus && sel.empty && sel.head === pos && e.detail === 1;
+		const inPlace = settings.clickToggle && this.view.hasFocus && sel.empty && sel.head === pos && e.detail === 1;
+		if (!settings.longPress && !inPlace) return;
 		const x = e.clientX, y = e.clientY;
 		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
 		const onMove = (m: MouseEvent) => { if (Math.abs(m.clientX - x) > MOVE_SLOP || Math.abs(m.clientY - y) > MOVE_SLOP) this.cancel(); };
+		// 여기까지 오면 움직이지 않고 뗀 것이다(움직이거나 꾹 누르기가 되면 cancel이 이 리스너를 뗀다)
 		const onUp = () => {
-			const shortClick = this.timer !== null; // 꾹 누르기가 되기 전에, 움직이지 않고 뗐다
 			this.cancel();
 			// 캐럿이 그대로면 CodeMirror가 선택을 내지 않아 unfoldOnEnter도 돌지 않는다: 여기서 접거나 편다
-			if (shortClick && inPlace) { if (wasFolded) this.unfold(pos); else this.fold(pos, false); }
+			if (inPlace) { if (wasFolded) this.unfold(pos); else this.fold(pos, false); }
 		};
 		// 누른 채 창을 벗어나면(Alt+Tab 등) 떼는 신호를 못 받을 수 있다: 꾹 누르기로 치지 않는다
 		const onBlur = () => this.cancel();
@@ -92,12 +105,13 @@ const pressFold = ViewPlugin.fromClass(class {
 			win.removeEventListener("blur", onBlur);
 			this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
 		};
+		if (!settings.longPress) return;
 		this.timer = win.setTimeout(() => {
 			this.timer = null;
 			this.cancel();
 			this.holdUntilRelease(win);
-			// 부모가 있으면 접힌 줄이어도 부모를 접는다. 최상단의 접힌 줄은 펴진 채로 둔다
-			// (누르는 순간 캐럿이 들어가며 이미 펴졌다: 다시 접으면 누른 보람이 없다)
+			// 부모가 있으면 접힌 줄이어도 부모를 접는다. 최상단의 접힌 줄은 편다
+			// (보통은 누르는 순간 캐럿이 들어가며 이미 펴졌다: 다시 접으면 누른 보람이 없다)
 			if (wasFolded && pos <= this.view.state.doc.length && !parentFold(this.view.state, pos)) this.unfold(pos);
 			else this.fold(pos, true);
 		}, LONG_PRESS);
@@ -168,6 +182,7 @@ const pressFold = ViewPlugin.fromClass(class {
 
 // 캐럿이 접힌 줄로 들어가면(클릭, 화살표) 편다. 범위 선택 중이거나 문서가 바뀐 트랜잭션은 건드리지 않는다
 const unfoldOnEnter = EditorState.transactionExtender.of((tr: Transaction) => {
+	if (!settings.unfoldOnEnter) return null;
 	if (!tr.selection || tr.docChanged || tr.annotation(ours)) return null;
 	if (!tr.isUserEvent("select")) return null;
 	const sel = tr.selection.main;
@@ -183,6 +198,26 @@ const unfoldOnEnter = EditorState.transactionExtender.of((tr: Transaction) => {
 
 export default class EditorUxfixPlugin extends Plugin {
 	async onload() {
+		Object.assign(settings, DEFAULT_SETTINGS, await this.loadData());
+		this.addSettingTab(new SettingTab(this.app, this));
 		this.registerEditorExtension([pressFold, unfoldOnEnter]);
+	}
+
+	async saveSettings() { await this.saveData(settings); }
+}
+
+class SettingTab extends PluginSettingTab {
+	constructor(app: App, readonly plugin: EditorUxfixPlugin) { super(app, plugin); }
+
+	display() {
+		const { containerEl } = this;
+		containerEl.empty();
+		const toggle = (key: keyof Settings, name: string, desc: string) =>
+			new Setting(containerEl).setName(name).setDesc(desc).addToggle(t => t
+				.setValue(settings[key])
+				.onChange(async v => { settings[key] = v; await this.plugin.saveSettings(); }));
+		toggle("longPress", "꾹 누르기로 부모 접기", "줄을 0.5초 누르면 그 줄을 품은 부모 항목이나 제목을 접는다. 부모가 없으면 그 줄을 접는다.");
+		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
+		toggle("unfoldOnEnter", "캐럿이 들어가면 펴기", "화살표나 클릭으로 캐럿이 접힌 줄에 들어가면 편다.");
 	}
 }
