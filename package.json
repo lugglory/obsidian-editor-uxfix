@@ -1,0 +1,23 @@
+{
+  "name": "linetree",
+  "version": "0.1.0",
+  "description": "Long-press a line to fold it; moving the cursor onto a folded line unfolds it",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin"
+  ],
+  "author": "Hyunyoung Park",
+  "license": "MIT",
+  "devDependencies": {
+    "@codemirror/language": "^6.10.0",
+    "@types/node": "^20.11.30",
+    "esbuild": "^0.28.1",
+    "obsidian": "^1.8.7",
+    "typescript": "^5.4.5"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "linetree",
+  "name": "Linetree",
+  "version": "0.1.0",
+  "minAppVersion": "1.6.6",
+  "description": "Long-press a line to fold it; moving the cursor onto a folded line unfolds it.",
+  "author": "Hyunyoung Park",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
