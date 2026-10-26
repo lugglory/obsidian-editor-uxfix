@@ -21,11 +21,15 @@ function foldedOn(state: EditorState, lineFrom: number, lineTo: number): Range |
 	return found;
 }
 
-// 접을 범위: 그 줄이 접히면 그 줄. withParent면 잎일 때 그 줄을 품은 가장 가까운 위 줄(부모 목록 항목, 제목)
-function foldTarget(state: EditorState, pos: number, withParent: boolean): Range | null {
+// 그 줄을 접는 범위
+function ownFold(state: EditorState, pos: number): Range | null {
 	const line = state.doc.lineAt(pos);
-	const own = foldable(state, line.from, line.to);
-	if (own || !withParent) return own;
+	return foldable(state, line.from, line.to);
+}
+
+// 그 줄을 품은 가장 가까운 위 줄(부모 목록 항목, 제목)을 접는 범위
+function parentFold(state: EditorState, pos: number): Range | null {
+	const line = state.doc.lineAt(pos);
 	for (let n = line.number - 1; n >= 1 && line.number - n <= SCAN_UP; n--) {
 		const l = state.doc.line(n);
 		const r = foldable(state, l.from, l.to);
@@ -34,8 +38,8 @@ function foldTarget(state: EditorState, pos: number, withParent: boolean): Range
 	return null;
 }
 
-// 꾹 누르기 = 접기(잎이면 부모). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기.
-// 접힌 줄이면 어느 쪽이든 편다(캐럿이 들어가며 unfoldOnEnter가 이미 폈으면 그대로).
+// 꾹 누르기 = 부모 접기(최상단이면 그 줄). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기.
+// 접힌 줄을 짧게 클릭하면 편다(캐럿이 들어가며 unfoldOnEnter가 이미 폈으면 그대로).
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
 	cleanup: (() => void) | null = null;
@@ -92,7 +96,10 @@ const pressFold = ViewPlugin.fromClass(class {
 			this.timer = null;
 			this.cancel();
 			this.holdUntilRelease(win);
-			if (wasFolded) this.unfold(pos); else this.fold(pos, true);
+			// 부모가 있으면 접힌 줄이어도 부모를 접는다. 최상단의 접힌 줄은 펴진 채로 둔다
+			// (누르는 순간 캐럿이 들어가며 이미 펴졌다: 다시 접으면 누른 보람이 없다)
+			if (wasFolded && pos <= this.view.state.doc.length && !parentFold(this.view.state, pos)) this.unfold(pos);
+			else this.fold(pos, true);
 		}, LONG_PRESS);
 	}
 
@@ -124,10 +131,11 @@ const pressFold = ViewPlugin.fromClass(class {
 		this.release = off;
 	}
 
-	fold(pos: number, withParent: boolean) {
+	// parent면 부모를, 부모가 없으면(최상단) 그 줄을 접는다
+	fold(pos: number, parent: boolean) {
 		const { state } = this.view;
 		if (pos > state.doc.length) return;
-		const r = foldTarget(state, pos, withParent);
+		const r = (parent && parentFold(state, pos)) || ownFold(state, pos);
 		if (!r) return;
 		// 캐럿이 접히는 안쪽에 있으면 접은 줄 끝으로
 		const head = state.selection.main.head;
