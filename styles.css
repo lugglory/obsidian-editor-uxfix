@@ -1,0 +1,54 @@
+/* Hovering left of the text: the line and its children */
+.editor-uxfix-hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.cm-editor.editor-uxfix-pointer .cm-scroller,
+.cm-editor.editor-uxfix-pointer .cm-content,
+.cm-editor.editor-uxfix-pointer .cm-line {
+	cursor: pointer;
+}
+
+/* Header button with nothing to do */
+.editor-uxfix-disabled {
+	opacity: 0.3;
+	cursor: default;
+}
+
+/* Long-press ring next to the mouse */
+.editor-uxfix-gauge {
+	position: fixed;
+	width: 18px;
+	height: 18px;
+	pointer-events: none;
+	z-index: var(--layer-tooltip);
+}
+
+.editor-uxfix-gauge svg {
+	width: 100%;
+	height: 100%;
+}
+
+.editor-uxfix-gauge circle {
+	fill: none;
+	stroke-width: 2.5;
+}
+
+.editor-uxfix-gauge-track {
+	stroke: var(--background-modifier-border);
+}
+
+.editor-uxfix-gauge-bar {
+	stroke: var(--interactive-accent);
+	stroke-dasharray: 1;
+	animation: editor-uxfix-gauge-fill var(--editor-uxfix-gauge-time) linear forwards;
+}
+
+@keyframes editor-uxfix-gauge-fill {
+	from {
+		stroke-dashoffset: var(--editor-uxfix-gauge-start);
+	}
+	to {
+		stroke-dashoffset: 0;
+	}
+}

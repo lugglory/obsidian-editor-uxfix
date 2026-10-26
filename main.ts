@@ -1,4 +1,4 @@
-import { App, MarkdownView, Platform, Plugin, PluginSettingTab, Setting, editorInfoField } from "obsidian";
+import { App, MarkdownView, Platform, Plugin, PluginSettingTab, Setting, editorInfoField, moment } from "obsidian";
 import { EditorState, Line, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
@@ -31,6 +31,47 @@ const refreshAll = () => refreshers.forEach(f => f());
 
 type Range = { from: number; to: number };
 
+// 화면 문구. 옵시디언 언어가 한국어면 한국어, 아니면 영어(옵시디언은 날짜 표시용 moment의 언어를 앱 언어로 맞춘다)
+const STRINGS = {
+	en: {
+		foldAll: "Fold all",
+		unfoldAll: "Unfold all",
+		longPress: ["Long-press to fold",
+			"Hold a line for 0.4 s to fold or unfold it. On a line with no children, its parent (list item or heading) folds. Left of the text (with Click left of text on), the parent folds even if the line has children. A ring next to the mouse fills up while you hold."],
+		clickToggle: ["Click the caret spot to fold",
+			"Clicking exactly where the caret already is folds or unfolds that line."],
+		altWheel: ["Alt+wheel folds step by step",
+			"With Alt held, each wheel notch unfolds (up) or folds (down) the line under the mouse and its children by one level. Nothing happens on a line with no children. The line under the mouse stays in place."],
+		rightWheel: ["Right-button+wheel folds step by step",
+			"Wheeling while holding the right mouse button works like Alt+wheel, and the context menu doesn't open when you release. Windows only."],
+		headerButtons: ["Fold all / unfold all buttons",
+			"Adds fold-all and unfold-all buttons to the view header (next to the reading view toggle). Fold all folds every level, hidden ones included. A button is dimmed when there is nothing to do."],
+		leftWheel: ["Wheel left of text folds step by step",
+			"Wheeling left of the text (margin, indentation, list markers, numbers, heading #) works like Alt+wheel without Alt, and doesn't scroll there. While this or Click left of text is on, hovering there tints the line and its children and shows a pointer cursor."],
+		leftClick: ["Click left of text to fold",
+			"Clicking left of the text folds or unfolds that line, like the fold chevron: the caret and focus stay put, and nothing happens on a line with no children. No drag selection starts there."],
+	},
+	ko: {
+		foldAll: "끝까지 접기",
+		unfoldAll: "끝까지 펴기",
+		longPress: ["꾹 누르기로 접기/펴기",
+			"줄을 0.4초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 꾹 누르면 자식이 있어도 부모를 접는다. 누르는 동안 마우스 옆에 원형 게이지가 차오른다."],
+		clickToggle: ["캐럿 자리 클릭으로 접기/펴기",
+			"캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다."],
+		altWheel: ["Alt+휠로 그 줄 단계별 접기/펴기",
+			"Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다."],
+		rightWheel: ["오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기",
+			"오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다."],
+		headerButtons: ["끝까지 펴기/접기 버튼",
+			"편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 끝까지 접기, 끝까지 펴기 버튼을 둔다. 끝까지 접기는 숨은 안쪽까지 모두 접는다. 누를 수 없는 버튼은 흐리게 한다."],
+		leftWheel: ["글 왼쪽에서 휠로 그 줄 단계별 접기/펴기",
+			"글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 Alt 없이도 Alt+휠과 같고, 그곳에서는 스크롤되지 않는다. 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 그곳에 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다."],
+		leftClick: ["글 왼쪽 클릭으로 그 줄 접기/펴기",
+			"글보다 왼쪽을 클릭하면 접기 꺾쇠 단추처럼 그 줄을 접거나 편다. 캐럿과 포커스는 그대로이고, 자식이 없는 줄이면 아무 일도 없다. 그곳에서는 드래그 선택이 시작되지 않는다."],
+	},
+};
+const t = () => moment.locale().startsWith("ko") ? STRINGS.ko : STRINGS.en;
+
 // 글 왼쪽에 마우스를 올렸을 때 옅게 칠하는 범위(그 줄과 그 안)
 const setHover = StateEffect.define<Range | null>();
 const hoverField = StateField.define<Range | null>({
@@ -40,7 +81,7 @@ const hoverField = StateField.define<Range | null>({
 		return tr.docChanged ? null : v; // 글이 바뀌면 다음 마우스 움직임에서 다시 잡는다
 	},
 });
-const hoverLine = Decoration.line({ attributes: { style: "background-color: var(--background-modifier-hover)" } });
+const hoverLine = Decoration.line({ class: "editor-uxfix-hover" }); // 모양은 styles.css
 
 // 그 줄 끝에서 시작하는 접힌 범위
 function foldedOn(state: EditorState, lineFrom: number, lineTo: number): Range | null {
@@ -147,8 +188,8 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (this.buttons) return;
 		const md = this.view.state.field(editorInfoField, false);
 		if (!(md instanceof MarkdownView) || (md.editor as unknown as { cm?: EditorView })?.cm !== this.view) return;
-		const foldAll = md.addAction("chevrons-down-up", "끝까지 접기", () => this.foldAll());
-		const openAll = md.addAction("chevrons-up-down", "끝까지 펴기", () => this.unfoldAll());
+		const foldAll = md.addAction("chevrons-down-up", t().foldAll, () => this.foldAll());
+		const openAll = md.addAction("chevrons-up-down", t().unfoldAll, () => this.unfoldAll());
 		this.buttons = { md, openAll, foldAll };
 	}
 
@@ -192,10 +233,8 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (!show) return;
 		const { state } = this.view;
 		const enable = (el: HTMLElement, on: boolean) => {
-			el.toggleClass("is-disabled", !on);
+			el.toggleClass("editor-uxfix-disabled", !on);
 			el.setAttr("aria-disabled", String(!on));
-			el.style.opacity = on ? "" : "0.3";
-			el.style.cursor = on ? "" : "default";
 		};
 		enable(b.openAll, foldedRanges(state).size > 0);
 		// 보이는 줄이 다 접혀 있어도 그 안에 안 접힌 줄이 남아 있으면 누를 수 있다
@@ -212,30 +251,24 @@ const pressFold = ViewPlugin.fromClass(class {
 	startGauge(win: Window, x: number, y: number) {
 		this.gaugeTimer = win.setTimeout(() => {
 			this.gaugeTimer = null;
+			// 모양과 차오르는 애니메이션은 styles.css. 여기서는 자리, 시작 양, 걸리는 시간만 넘긴다
 			const doc = win.document, ns = "http://www.w3.org/2000/svg";
-			const C = 2 * Math.PI * 7; // 원 둘레
-			const el = doc.createElement("div");
-			el.style.cssText = `position:fixed;left:${x + 14}px;top:${y + 14}px;width:18px;height:18px;pointer-events:none;z-index:10000`;
+			const el = doc.body.createDiv({ cls: "editor-uxfix-gauge" });
+			el.setCssProps({
+				left: `${x + 14}px`,
+				top: `${y + 14}px`,
+				"--editor-uxfix-gauge-start": String(1 - GAUGE_DELAY / LONG_PRESS),
+				"--editor-uxfix-gauge-time": `${LONG_PRESS - GAUGE_DELAY}ms`,
+			});
 			const svg = doc.createElementNS(ns, "svg");
-			svg.setAttribute("width", "18");
-			svg.setAttribute("height", "18");
-			const circle = (stroke: string) => {
+			svg.setAttribute("viewBox", "0 0 18 18");
+			for (const cls of ["editor-uxfix-gauge-track", "editor-uxfix-gauge-bar"]) {
 				const c = doc.createElementNS(ns, "circle");
-				for (const [k, v] of [["cx", "9"], ["cy", "9"], ["r", "7"], ["fill", "none"], ["stroke-width", "2.5"], ["transform", "rotate(-90 9 9)"]]) c.setAttribute(k, v);
-				c.style.stroke = stroke;
+				for (const [k, v] of [["cx", "9"], ["cy", "9"], ["r", "7"], ["pathLength", "1"], ["transform", "rotate(-90 9 9)"], ["class", cls]]) c.setAttribute(k, v);
 				svg.appendChild(c);
-				return c;
-			};
-			circle("var(--background-modifier-border)");
-			const bar = circle("var(--interactive-accent)");
-			bar.style.strokeDasharray = `${C}`;
-			bar.style.strokeDashoffset = `${C * (1 - GAUGE_DELAY / LONG_PRESS)}`;
+			}
 			el.appendChild(svg);
-			doc.body.appendChild(el);
 			this.gauge = el;
-			el.getBoundingClientRect(); // 시작 모양을 그려 둔 뒤에 바꿔야 차오르는 transition이 돈다
-			bar.style.transition = `stroke-dashoffset ${LONG_PRESS - GAUGE_DELAY}ms linear`;
-			bar.style.strokeDashoffset = "0";
 		}, GAUGE_DELAY);
 	}
 
@@ -273,7 +306,7 @@ const pressFold = ViewPlugin.fromClass(class {
 			const hit = m && (settings.leftWheel || settings.leftClick) ? this.leftRange(m.x, m.y) : null;
 			let next: Range | null = null;
 			if (hit) next = { from: hit.line.from, to: hit.range ? Math.max(hit.range.to, hit.line.to) : hit.line.to };
-			// 휠, 클릭이 되는 곳임을 알 수 있게 손가락 커서(글 영역은 기본이 글자 커서라 둘 다에 건다)
+			// 휠, 클릭이 되는 곳임을 알 수 있게 손가락 커서
 			this.setCursor(hit !== null);
 			const cur = this.view.state.field(hoverField, false);
 			if (cur === undefined || (cur?.from === next?.from && cur?.to === next?.to)) return;
@@ -282,10 +315,7 @@ const pressFold = ViewPlugin.fromClass(class {
 	};
 
 	setCursor(on: boolean) {
-		const c = on ? "pointer" : "";
-		if (this.view.scrollDOM.style.cursor === c) return;
-		this.view.scrollDOM.style.cursor = c;
-		this.view.contentDOM.style.cursor = c;
+		this.view.dom.toggleClass("editor-uxfix-pointer", on); // 모양은 styles.css
 	}
 
 	// 칠할 범위 중 화면에 그려진 줄만. 접힌 줄 안은 접힌 줄로 친다
@@ -613,16 +643,17 @@ class SettingTab extends PluginSettingTab {
 	display() {
 		const { containerEl } = this;
 		containerEl.empty();
-		const toggle = (key: keyof Settings, name: string, desc: string) =>
-			new Setting(containerEl).setName(name).setDesc(desc).addToggle(t => t
+		const text = t();
+		const toggle = (key: keyof Settings) =>
+			new Setting(containerEl).setName(text[key][0]).setDesc(text[key][1]).addToggle(c => c
 				.setValue(settings[key])
 				.onChange(async v => { settings[key] = v; refreshAll(); await this.plugin.saveSettings(); }));
-		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.4초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 꾹 누르면 자식이 있어도 부모를 접는다.");
-		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
-		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다.");
-		if (Platform.isWin) toggle("rightWheel", "오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기", "오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다.");
-		toggle("headerButtons", "위쪽 줄에 끝까지 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 끝까지 펴기, 끝까지 접기 버튼을 둔다. 누를 수 없는 버튼은 흐리게 한다.");
-		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 그곳에서는 휠로 스크롤되지 않는다(자식이 없는 줄이면 아무 일도 없다). 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다.");
-		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄을 접거나 편다(자식이 없는 줄이면 아무 일도 없다). 접기 꺾쇠 단추처럼 캐럿과 포커스는 그대로이고, 그곳에서는 드래그 선택이 되지 않는다. 그곳을 꾹 누르면(꾹 누르기 설정이 켜져 있을 때) 그 줄의 부모를 접는다(부모가 없으면 그 줄).");
+		toggle("longPress");
+		toggle("clickToggle");
+		toggle("altWheel");
+		if (Platform.isWin) toggle("rightWheel");
+		toggle("headerButtons");
+		toggle("leftWheel");
+		toggle("leftClick");
 	}
 }
