@@ -95,7 +95,7 @@ function visibleTree(state: EditorState, roots: Range[]): Node[] {
 }
 
 // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기/펴기.
-// Alt+휠(윈도우즈는 오른쪽 버튼을 누른 채 휠도) = 마우스 자리의 줄(자식이 없으면 부모)과 그 안을 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로). 마우스 자리의 줄은 제자리에 둔다.
+// Alt+휠(윈도우즈는 오른쪽 버튼을 누른 채 휠도) = 마우스 자리의 줄과 그 안을 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로). 마우스 자리의 줄은 제자리에 둔다. 자식이 없는 줄이면 부모를 바로 접기만 한다.
 // 편집기 위쪽 줄의 버튼 = 문서 전체를 한 단계/끝까지 펴기/접기. 누를 수 없는 버튼은 흐리게 한다
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
@@ -298,16 +298,21 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (Math.abs(this.wheelAcc) < WHEEL_STEP) return;
 		const open = this.wheelAcc < 0; // 위로 = 펴기
 		this.wheelAcc = 0;
-		if (local) { this.keepLine(local.pos, () => this.step([local.range], open)); return; }
-		// 마우스 자리의 줄(자식이 없으면 부모)과 그 안
-		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
+		const pos = local ? local.pos : this.view.posAtCoords({ x: e.clientX, y: e.clientY });
 		if (pos === null) return;
-		this.keepLine(pos, () => {
-			const { state } = this.view;
-			const r = ownFold(state, pos) || parentFold(state, pos);
-			if (r) this.step([r], open);
-		});
+		this.keepLine(pos, () => this.stepLine(pos, open));
 	};
+
+	// 그 줄과 그 안을 한 단계. 자식이 없는 줄이면 접기만: 부모를 바로 접는다(안쪽부터 한 단계씩 접지 않는다).
+	// 펴기는 아무 일도 없다(그 줄은 보이니 부모는 이미 펴져 있다. 형제는 건드리지 않는다)
+	stepLine(pos: number, open: boolean) {
+		const { state } = this.view;
+		const own = ownFold(state, pos);
+		if (own) { this.step([own], open); return; }
+		if (open) return;
+		const parent = parentFold(state, pos);
+		if (parent) this.foldRanges([parent]);
+	}
 
 	// 마우스가 글 왼쪽(편집기 왼쪽 여백, 들여쓰기, 목록 기호, 번호, 체크박스, 제목 #)에 있으면 그 높이의 줄을 접는 범위
 	// (자식이 없으면 부모)
@@ -464,10 +469,10 @@ class SettingTab extends PluginSettingTab {
 				.onChange(async v => { settings[key] = v; refreshAll(); await this.plugin.saveSettings(); }));
 		toggle("longPress", "꾹 누르기로 접기/펴기", "줄을 0.4초 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다.");
 		toggle("clickToggle", "캐럿 자리 클릭으로 접기/펴기", "캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다.");
-		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 그 부모가 대상이다. 마우스가 가리키는 줄은 제자리에 남는다.");
+		toggle("altWheel", "Alt+휠로 그 줄 단계별 접기/펴기", "Alt를 누른 채 휠을 굴리면 마우스가 가리키는 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 접기만 되고, 그 부모를 바로 접는다. 마우스가 가리키는 줄은 제자리에 남는다.");
 		if (Platform.isWin) toggle("rightWheel", "오른쪽 버튼 누른 채 휠로 그 줄 단계별 접기/펴기", "오른쪽 버튼을 누른 채 휠을 굴리면 Alt+휠과 같다. 그때는 버튼을 떼도 오른쪽 클릭 메뉴가 뜨지 않는다. 윈도우즈만 지원한다.");
 		toggle("headerButtons", "위쪽 줄에 펴기/접기 버튼", "편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 문서 전체를 끝까지 펴기, 한 단계 펴기, 한 단계 접기, 끝까지 접기 버튼을 둔다. 누를 수 없는 버튼은 흐리게 한다.");
-		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄(자식이 없으면 부모)과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 그 동안 그곳에서는 휠로 스크롤되지 않는다.");
+		toggle("leftWheel", "글 왼쪽에서 휠로 그 줄 단계별 접기/펴기", "글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 키를 누르지 않아도 그 높이의 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 자식이 없는 줄이면 부모를 바로 접기만 한다. 그 동안 그곳에서는 휠로 스크롤되지 않는다.");
 		toggle("leftClick", "글 왼쪽 클릭으로 그 줄 접기/펴기", "글보다 왼쪽을 클릭하면 그 높이의 줄(자식이 없으면 부모)을 접거나 편다. 누른 채 움직이면 보통 드래그 선택이다.");
 	}
 }
