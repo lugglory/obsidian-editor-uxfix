@@ -63,10 +63,18 @@ const longPress = ViewPlugin.fromClass(class {
 		const { state } = this.view;
 		const line = state.doc.lineAt(pos);
 		const wasFolded = foldedOn(state, line.from, line.to) !== null;
+		// 캐럿이 있는 바로 그 자리를 누름: 캐럿이 옮겨지지 않으니 짧은 클릭이면 접기
+		const sel = state.selection.main;
+		const inPlace = sel.empty && sel.head === pos && e.detail === 1;
 		const x = e.clientX, y = e.clientY;
 		const doc = this.view.dom.ownerDocument;
 		const onMove = (m: MouseEvent) => { if (Math.abs(m.clientX - x) > MOVE_SLOP || Math.abs(m.clientY - y) > MOVE_SLOP) this.cancel(); };
-		const onUp = () => this.cancel();
+		const onUp = () => {
+			const shortClick = this.timer !== null; // 꾹 누르기가 되기 전에, 움직이지 않고 뗐다
+			this.cancel();
+			// 접힌 줄이었으면 누르는 순간 이미 펴졌다
+			if (shortClick && inPlace && !wasFolded) this.fold(pos);
+		};
 		doc.addEventListener("mousemove", onMove);
 		doc.addEventListener("mouseup", onUp);
 		this.view.scrollDOM.addEventListener("scroll", onUp, { passive: true });
