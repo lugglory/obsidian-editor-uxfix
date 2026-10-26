@@ -343,7 +343,8 @@ const pressFold = ViewPlugin.fromClass(class {
 			const range = local.range;
 			const win = this.win = this.view.dom.ownerDocument.defaultView || window;
 			this.track(win, e, () => { if (range) this.toggleRange(local.pos, range); });
-			if (!settings.longPress) return;
+			// 꾹 눌러도 접을 것이 없으면 꾹 누르기(게이지도)를 걸지 않는다
+			if (!settings.longPress || !this.upTarget(local.pos)) return;
 			this.timer = win.setTimeout(() => {
 				this.timer = null;
 				this.cancel();
@@ -363,7 +364,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
 		// 여기까지 오면 움직이지 않고 뗀 것이다(움직이거나 꾹 누르기가 되면 cancel이 이 리스너를 뗀다)
 		this.track(win, e, () => { if (inPlace) this.toggle(pos, false); });
-		if (!settings.longPress) return;
+		if (!settings.longPress || !this.toggleTarget(pos, true)) return;
 		this.timer = win.setTimeout(() => {
 			this.timer = null;
 			this.cancel();
@@ -477,26 +478,40 @@ const pressFold = ViewPlugin.fromClass(class {
 		return true;
 	}
 
+	// toggle이 할 일: 펼 접힌 범위, 또는 접을 범위. 없으면 null
+	toggleTarget(pos: number, parentIfLeaf: boolean): { folded: Range | null; fold: Range | null } | null {
+		const { state } = this.view;
+		if (pos > state.doc.length) return null;
+		const line = visibleLine(state, pos);
+		const folded = foldedOn(state, line.from, line.to);
+		if (folded) return { folded, fold: null };
+		const r = ownFold(state, pos) || (parentIfLeaf ? parentFold(state, pos) : null);
+		return r ? { folded: null, fold: r } : null;
+	}
+
 	// 접혀 있으면 편다. 아니면 그 줄을 접고, 자식이 없으면 parentIfLeaf일 때 부모를 접는다
 	toggle(pos: number, parentIfLeaf: boolean) {
 		if (pos > this.view.state.doc.length) return;
 		this.keepLine(pos, () => {
-			const { state } = this.view;
-			const line = visibleLine(state, pos);
-			const folded = foldedOn(state, line.from, line.to);
-			if (folded) { this.unfold(folded); return; }
-			const r = ownFold(state, pos) || (parentIfLeaf ? parentFold(state, pos) : null);
-			if (r) this.foldRanges([r]);
+			const t = this.toggleTarget(pos, parentIfLeaf);
+			if (t?.folded) this.unfold(t.folded);
+			else if (t?.fold) this.foldRanges([t.fold]);
 		});
 	}
 
-	// 그 줄의 부모를 접는다. 부모가 없으면(맨 바깥 줄) 그 줄을 접는다(이미 접혀 있으면 그대로)
+	// foldUp이 접을 범위: 그 줄의 부모, 부모가 없으면(맨 바깥 줄) 그 줄. 이미 접혀 있으면 null
+	upTarget(pos: number): Range | null {
+		const { state } = this.view;
+		if (pos > state.doc.length) return null;
+		const r = parentFold(state, pos) || ownFold(state, pos);
+		return r && !foldedOn(state, state.doc.lineAt(r.from).from, r.from) ? r : null;
+	}
+
 	foldUp(pos: number) {
 		if (pos > this.view.state.doc.length) return;
 		this.keepLine(pos, () => {
-			const { state } = this.view;
-			const r = parentFold(state, pos) || ownFold(state, pos);
-			if (r && !foldedOn(state, state.doc.lineAt(r.from).from, r.from)) this.foldRanges([r]);
+			const r = this.upTarget(pos);
+			if (r) this.foldRanges([r]);
 		});
 	}
 
