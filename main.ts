@@ -372,7 +372,6 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (local) {
 			e.preventDefault();
 			e.stopPropagation();
-			if (e.detail !== 1) return; // 더블클릭의 두 번째는 다시 토글하지 않는다
 			const range = local.range;
 			const win = this.win = this.view.dom.ownerDocument.defaultView || window;
 			this.track(win, e, () => { if (range) this.toggleRange(local.pos, range); });
