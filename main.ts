@@ -387,13 +387,13 @@ const pressFold = ViewPlugin.fromClass(class {
 		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
 		// 움직이거나 떼면 꾹 누르기가 아니다(cancel이 타이머를 푼다)
 		this.track(win, e, () => {});
-		const pending = this.toggleTarget(pos, true);
+		const pending = this.toggleTarget(pos);
 		if (!pending) return;
 		this.timer = win.setTimeout(() => {
 			this.timer = null;
 			this.cancel();
 			this.holdUntilRelease(win);
-			this.toggle(pos, true);
+			this.toggle(pos);
 		}, settings.longPressMs);
 		this.startGauge(win, e.clientX, e.clientY, pending.folded ? "unfold" : "fold");
 	}
@@ -480,21 +480,21 @@ const pressFold = ViewPlugin.fromClass(class {
 	}
 
 	// toggle이 할 일: 펼 접힌 범위, 또는 접을 범위. 없으면 null
-	toggleTarget(pos: number, parentIfLeaf: boolean): { folded: Range | null; fold: Range | null } | null {
+	toggleTarget(pos: number): { folded: Range | null; fold: Range | null } | null {
 		const { state } = this.view;
 		if (pos > state.doc.length) return null;
 		const line = visibleLine(state, pos);
 		const folded = foldedOn(state, line.from, line.to);
 		if (folded) return { folded, fold: null };
-		const r = ownFold(state, pos) || (parentIfLeaf ? parentFold(state, pos) : null);
+		const r = ownFold(state, pos) || parentFold(state, pos);
 		return r ? { folded: null, fold: r } : null;
 	}
 
-	// 접혀 있으면 편다. 아니면 그 줄을 접고, 자식이 없으면 parentIfLeaf일 때 부모를 접는다
-	toggle(pos: number, parentIfLeaf: boolean) {
+	// 접혀 있으면 편다. 아니면 그 줄을 접고, 자식이 없으면 부모를 접는다
+	toggle(pos: number) {
 		if (pos > this.view.state.doc.length) return;
 		this.keepLine(pos, () => {
-			const t = this.toggleTarget(pos, parentIfLeaf);
+			const t = this.toggleTarget(pos);
 			if (t?.folded) this.unfold(t.folded);
 			else if (t?.fold) this.foldRanges([t.fold]);
 		});
