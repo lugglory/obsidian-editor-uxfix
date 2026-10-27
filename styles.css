@@ -15,11 +15,11 @@
 	cursor: default;
 }
 
-/* Long-press ring next to the mouse */
+/* Long-press chevrons: outward to unfold, inward to fold */
 .editor-uxfix-gauge {
 	position: fixed;
-	width: 18px;
-	height: 18px;
+	width: 24px;
+	height: 24px;
 	pointer-events: none;
 	z-index: var(--layer-tooltip);
 }
@@ -29,9 +29,11 @@
 	height: 100%;
 }
 
-.editor-uxfix-gauge circle {
+.editor-uxfix-gauge path {
 	fill: none;
 	stroke-width: 2.5;
+	stroke-linecap: round;
+	stroke-linejoin: round;
 }
 
 .editor-uxfix-gauge-track {

@@ -37,7 +37,7 @@ const STRINGS = {
 		foldAll: "Fold all",
 		unfoldAll: "Unfold all",
 		longPress: ["Long-press to fold",
-			"Hold a line to fold or unfold it. On a line with no children, its parent (list item or heading) folds. Left of the text (with Click left of text on), the parent folds even if the line has children. A ring next to the mouse fills up while you hold."],
+			"Hold a line to fold or unfold it. On a line with no children, its parent (list item or heading) folds. Left of the text (with Click left of text on), the parent folds even if the line has children. Directional chevrons next to the mouse fill up while you hold: outward to unfold, inward to fold."],
 		longPressMs: ["Long-press time", "How long to hold, in milliseconds, before a press counts as a long-press."],
 		clickToggle: ["Click the caret spot to fold",
 			"Clicking exactly where the caret already is folds or unfolds that line."],
@@ -52,7 +52,7 @@ const STRINGS = {
 		foldAll: "끝까지 접기",
 		unfoldAll: "끝까지 펴기",
 		longPress: ["꾹 누르기로 접기/펴기",
-			"줄을 꾹 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 꾹 누르면 자식이 있어도 부모를 접는다. 누르는 동안 마우스 옆에 원형 게이지가 차오른다."],
+			"줄을 꾹 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 꾹 누르면 자식이 있어도 부모를 접는다. 누르는 동안 마우스 옆에 꺾쇠 게이지가 차오른다. 펼 때는 바깥쪽, 접을 때는 가운데를 향한다."],
 		longPressMs: ["꾹 누르기 시간", "이만큼(밀리초) 누르고 있어야 꾹 누르기로 친다."],
 		clickToggle: ["캐럿 자리 클릭으로 접기/펴기",
 			"캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다."],
@@ -240,13 +240,15 @@ const pressFold = ViewPlugin.fromClass(class {
 		this.stopGauge();
 	}
 
-	// 꾹 누르기가 차오르는 원형 게이지를 마우스 오른쪽 아래에 띄운다. 짧은 클릭에는 안 보이게 조금 뒤에, 그만큼 찬 채로 띄운다
-	startGauge(win: Window, x: number, y: number) {
+	// 펼 때는 바깥쪽, 접을 때는 안쪽을 향해 차오르는 꺾쇠 게이지를 마우스 오른쪽 아래에 띄운다. 짧은 클릭에는 안 보이게 조금 뒤에, 그만큼 찬 채로 띄운다
+	startGauge(win: Window, x: number, y: number, action: "fold" | "unfold") {
 		this.gaugeTimer = win.setTimeout(() => {
 			this.gaugeTimer = null;
-			// 모양과 차오르는 애니메이션은 styles.css. 여기서는 자리, 시작 양, 걸리는 시간만 넘긴다
+			// 모양과 차오르는 애니메이션은 styles.css. 여기서는 동작에 맞는 경로, 자리, 시작 양, 걸리는 시간을 넘긴다
 			const doc = win.document, ns = "http://www.w3.org/2000/svg";
 			const el = doc.body.createDiv({ cls: "editor-uxfix-gauge" });
+			el.setAttribute("aria-hidden", "true");
+			el.dataset.action = action;
 			el.setCssProps({
 				left: `${x + 14}px`,
 				top: `${y + 14}px`,
@@ -254,11 +256,17 @@ const pressFold = ViewPlugin.fromClass(class {
 				"--editor-uxfix-gauge-time": `${settings.longPressMs - GAUGE_DELAY}ms`,
 			});
 			const svg = doc.createElementNS(ns, "svg");
-			svg.setAttribute("viewBox", "0 0 18 18");
+			svg.setAttribute("viewBox", "0 0 24 24");
+			// 꺾쇠의 양 끝에서 꼭짓점으로 동시에 채워 방향을 드러낸다.
+			const paths = action === "unfold"
+				? ["M 5 9 L 12 3", "M 19 9 L 12 3", "M 5 15 L 12 21", "M 19 15 L 12 21"]
+				: ["M 5 3 L 12 9", "M 19 3 L 12 9", "M 5 21 L 12 15", "M 19 21 L 12 15"];
 			for (const cls of ["editor-uxfix-gauge-track", "editor-uxfix-gauge-bar"]) {
-				const c = doc.createElementNS(ns, "circle");
-				for (const [k, v] of [["cx", "9"], ["cy", "9"], ["r", "7"], ["pathLength", "1"], ["transform", "rotate(-90 9 9)"], ["class", cls]]) c.setAttribute(k, v);
-				svg.appendChild(c);
+				for (const d of paths) {
+					const path = doc.createElementNS(ns, "path");
+					for (const [k, v] of [["d", d], ["pathLength", "1"], ["class", cls]]) path.setAttribute(k, v);
+					svg.appendChild(path);
+				}
 			}
 			el.appendChild(svg);
 			this.gauge = el;
@@ -374,7 +382,7 @@ const pressFold = ViewPlugin.fromClass(class {
 				this.holdUntilRelease(win);
 				this.foldUp(local.pos);
 			}, settings.longPressMs);
-			this.startGauge(win, e.clientX, e.clientY);
+			this.startGauge(win, e.clientX, e.clientY, "fold");
 			return;
 		}
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
@@ -387,14 +395,16 @@ const pressFold = ViewPlugin.fromClass(class {
 		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
 		// 여기까지 오면 움직이지 않고 뗀 것이다(움직이거나 꾹 누르기가 되면 cancel이 이 리스너를 뗀다)
 		this.track(win, e, () => { if (inPlace) this.toggle(pos, false); });
-		if (!settings.longPress || !this.toggleTarget(pos, true)) return;
+		if (!settings.longPress) return;
+		const pending = this.toggleTarget(pos, true);
+		if (!pending) return;
 		this.timer = win.setTimeout(() => {
 			this.timer = null;
 			this.cancel();
 			this.holdUntilRelease(win);
 			this.toggle(pos, true);
 		}, settings.longPressMs);
-		this.startGauge(win, e.clientX, e.clientY);
+		this.startGauge(win, e.clientX, e.clientY, pending.folded ? "unfold" : "fold");
 	}
 
 	onScroll = () => this.cancel();
