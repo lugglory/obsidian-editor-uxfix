@@ -1,11 +1,11 @@
 <!doctype html>
-<!-- 꾹 누르기 게이지의 거리, 크기, 두께, 시간을 눌러 보며 맞추는 로컬 데모. 브라우저로 바로 연다.
+<!-- 길게 누르기 게이지의 거리, 크기, 두께, 시간을 눌러 보며 맞추는 로컬 데모. 브라우저로 바로 연다.
      게이지 코드는 main.ts의 startGauge와 styles.css를 옮겨 온 복사본이라, 플러그인을 바꾸면 여기도 맞춰야 한다. -->
 <html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>꾹 누르기 게이지 놀이터</title>
+<title>길게 누르기 게이지 놀이터</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
 /* 레이아웃: 왼쪽은 실제로 눌러 보는 편집기 흉내, 오른쪽(좁으면 아래)은 조절판 */
@@ -94,8 +94,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 
 <div class="wrap">
 	<header>
-		<h1>꾹 누르기 게이지 놀이터</h1>
-		<p class="lede">아래 목록의 줄을 마우스로 꾹 눌러 보세요. 플러그인과 같은 꺾쇠 게이지가 커서 옆에 뜨고, 다 차면 그 줄이 접히거나 펴져요. 글 왼쪽 여백에서는 화살표 커서, 글 위에서는 I빔 커서로 눌러 볼 수 있어요.</p>
+		<h1>길게 누르기 게이지 놀이터</h1>
+		<p class="lede">아래 목록의 줄을 마우스로 길게 눌러 보세요. 플러그인과 같은 꺾쇠 게이지가 커서 옆에 뜨고, 다 차면 그 줄이 접히거나 펴져요. 글 왼쪽 여백에서는 화살표 커서, 글 위에서는 I빔 커서로 눌러 볼 수 있어요.</p>
 	</header>
 
 	<div class="main">
@@ -129,7 +129,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 				<input type="range" id="stroke" min="1.25" max="3.5" step="0.25">
 			</div>
 			<div class="field">
-				<label for="ms">꾹 누르기 시간 <output id="ms-out"></output></label>
+				<label for="ms">길게 누르기 시간 <output id="ms-out"></output></label>
 				<input type="range" id="ms" min="200" max="1200" step="50">
 				<small>앞의 120ms는 게이지 없이 기다려요(짧은 클릭에는 안 보이게)</small>
 			</div>
@@ -152,7 +152,7 @@ const ITEMS = [
 	[0, "주간 회의 메모", true],
 	[1, "지난주 한 일"],
 	[2, "접기 게이지를 꺾쇠로 바꿈"],
-	[2, "꾹 누르기 시간 설정 추가"],
+	[2, "길게 누르기 시간 설정 추가"],
 	[1, "이번 주 할 일"],
 	[2, "커뮤니티 플러그인 심사 대응"],
 	[3, "README 스크린샷 다시 찍기"],

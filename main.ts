@@ -3,18 +3,18 @@ import { EditorState, Line, RangeSetBuilder, StateEffect, StateField } from "@co
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
 
-const GAUGE_DELAY = 120; // 꾹 누르기 게이지를 띄우기까지 ms(짧은 클릭에는 안 보이게)
-const MOVE_SLOP = 4;    // 이만큼 넘게 움직이면 꾹 누르기가 아니다(드래그 선택)
+const GAUGE_DELAY = 120; // 길게 누르기 게이지를 띄우기까지 기다리는 시간(ms). 짧은 클릭에는 안 보이게
+const MOVE_SLOP = 4;    // 길게 누르기로 인정하는 최대 이동 거리(px). 더 움직이면 드래그 선택
 const SCAN_UP = 2000;   // 부모를 찾아 위로 훑는 줄 수
 const WHEEL_STEP = 100; // 휠 한 단계로 치는 스크롤 양(px). 마우스 휠 한 칸이 보통 100, 터치패드는 잘게 나눠 온다
-const WHEEL_IDLE = 300; // 이만큼(ms) 휠이 멈추면 덜 찬 양을 버린다
+const WHEEL_IDLE = 300; // 덜 찬 휠 양을 버리기까지 휠이 멈춰 있는 시간(ms)
 
 interface Settings {
-	longPress: boolean;   // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기)
-	longPressMs: number;  // 꾹 누르기로 치는 시간(ms)
+	longPress: boolean;   // 길게 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기)
+	longPressMs: number;  // 길게 누르기로 치는 시간(ms)
 	headerButtons: boolean; // 편집기 위쪽 줄의 끝까지 펴기/접기 버튼
 	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호)에서 휠 = 그 줄을 한 단계씩 펴기/접기
-	leftClick: boolean;     // 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기(꺾쇠 단추처럼, 캐럿은 그대로)
+	leftClick: boolean;     // 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기(꺾쇠 버튼처럼, 캐럿은 그대로)
 }
 
 const DEFAULT_SETTINGS: Settings = { longPress: true, longPressMs: 400, headerButtons: true, leftWheel: true, leftClick: true };
@@ -22,6 +22,7 @@ const DEFAULT_SETTINGS: Settings = { longPress: true, longPressMs: 400, headerBu
 type BoolKey = Exclude<keyof Settings, "longPressMs">;
 const BOOL_KEYS: BoolKey[] = ["longPress", "headerButtons", "leftWheel", "leftClick"];
 const clampMs = (v: number) => Math.min(1000, Math.max(200, v));
+const msLabel = (v: number) => `${v} ms`; // 설정 화면의 길게 누르기 시간 표기
 
 // 편집기 확장들이 이벤트 때마다 읽는다: 설정을 바꾸면 바로 적용된다
 const settings: Settings = { ...DEFAULT_SETTINGS };
@@ -38,8 +39,8 @@ const STRINGS = {
 		foldAll: "Fold all",
 		unfoldAll: "Unfold all",
 		longPress: ["Long-press to fold",
-			"Hold a line to fold or unfold it. On a line with no children, its parent (list item or heading) folds. Left of the text (with Click left of text on), the parent folds even if the line has children. Directional chevrons next to the mouse fill up while you hold: outward to unfold, inward to fold."],
-		longPressMs: ["Long-press time", "How long to hold, in milliseconds, before a press counts as a long-press."],
+			"Hold a line to fold or unfold it. On a line with no children, its parent (list item or heading) folds. Left of the text (with Click left of text on), the parent folds even if the line has children."],
+		longPressMs: "Long-press duration",
 		headerButtons: ["Fold all / unfold all buttons",
 			"Adds fold-all and unfold-all buttons to the view header (next to the reading view toggle). Fold all folds every level, hidden ones included. A button is dimmed when there is nothing to do."],
 		leftWheel: ["Wheel left of text folds step by step",
@@ -50,15 +51,15 @@ const STRINGS = {
 	ko: {
 		foldAll: "끝까지 접기",
 		unfoldAll: "끝까지 펴기",
-		longPress: ["꾹 누르기로 접기/펴기",
-			"줄을 꾹 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 꾹 누르면 자식이 있어도 부모를 접는다. 누르는 동안 마우스 옆에 꺾쇠 게이지가 차오른다. 펼 때는 바깥쪽, 접을 때는 가운데를 향한다."],
-		longPressMs: ["꾹 누르기 시간", "이만큼(밀리초) 누르고 있어야 꾹 누르기로 친다."],
+		longPress: ["길게 누르기로 접기/펴기",
+			"줄을 길게 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 길게 누르면 자식이 있어도 부모를 접는다."],
+		longPressMs: "길게 누르기 시간",
 		headerButtons: ["끝까지 펴기/접기 버튼",
-			"편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 끝까지 접기, 끝까지 펴기 버튼을 둔다. 끝까지 접기는 숨은 안쪽까지 모두 접는다. 누를 수 없는 버튼은 흐리게 한다."],
+			"편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 끝까지 접기, 끝까지 펴기 버튼을 둔다. 끝까지 접기는 숨은 안쪽까지 모두 접는다. 할 일이 없는 버튼은 흐리게 표시한다."],
 		leftWheel: ["글 왼쪽에서 휠로 그 줄 단계별 접기/펴기",
-			"글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호. 제목은 # 말고 그 왼쪽 여백만)에서 휠을 굴리면 그 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 그곳에서는 스크롤되지 않고, 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다. 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 그곳에 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다."],
+			"글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호. 제목은 # 말고 그 왼쪽 여백만)에서 휠을 굴리면 그 줄과 하위 줄을 휠 한 칸에 한 단계씩 펴거나(위로) 접는다(아래로). 그곳에서는 스크롤되지 않고, 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다. 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 그곳에 마우스를 올린 줄과 하위 줄을 옅게 칠하고 커서를 손가락 모양으로 바꾼다."],
 		leftClick: ["글 왼쪽 클릭으로 그 줄 접기/펴기",
-			"글보다 왼쪽을 클릭하면 접기 꺾쇠 단추처럼 그 줄을 접거나 편다. 캐럿과 포커스는 그대로이고, 자식이 없는 줄이면 아무 일도 없다. 그곳에서는 드래그 선택이 시작되지 않는다."],
+			"글보다 왼쪽을 클릭하면 접기 꺾쇠 버튼처럼 그 줄을 접거나 편다. 캐럿과 포커스는 그대로이고, 자식이 없는 줄이면 아무 일도 없다. 그곳에서는 드래그 선택이 시작되지 않는다."],
 	},
 };
 const t = () => moment.locale().startsWith("ko") ? STRINGS.ko : STRINGS.en;
@@ -139,13 +140,13 @@ function visibleTree(state: EditorState, roots: Range[]): Node[] {
 	return out;
 }
 
-// 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기).
+// 길게 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기).
 // 글 왼쪽 휠 = 그 높이의 줄과 그 안을 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로). 마우스 자리의 줄은 제자리에 둔다. 자식이 없는 줄이면 아무 일도 없다.
 // 편집기 위쪽 줄의 버튼 = 문서 전체를 끝까지 펴기/접기. 누를 수 없는 버튼은 흐리게 한다
 const pressFold = ViewPlugin.fromClass(class {
 	timer: number | null = null;
 	cleanup: (() => void) | null = null;
-	release: (() => void) | null = null; // 꾹 누르기 뒤 holdUntilRelease가 건 것을 푼다
+	release: (() => void) | null = null; // 길게 누르기 뒤 holdUntilRelease가 건 것을 푼다
 	win: Window = window; // 편집기가 있는 창(분리 창일 수 있다). 타이머도 이 창에 건다
 	wheelAcc = 0;         // 아직 한 단계가 안 된 휠 양
 	wheelAt = 0;          // 마지막 휠 시각
@@ -153,7 +154,7 @@ const pressFold = ViewPlugin.fromClass(class {
 	frame: number | null = null; // keepLine이 높이를 맞출 프레임
 	buttons: { md: MarkdownView; openAll: HTMLElement; foldAll: HTMLElement } | null = null;
 	refreshTimer: number | null = null;
-	gauge: HTMLElement | null = null; // 꾹 누르기 게이지
+	gauge: HTMLElement | null = null; // 길게 누르기 게이지
 	gaugeTimer: number | null = null;
 	decorations: DecorationSet = Decoration.none; // 호버 칠하기
 	mouse: { x: number; y: number } | null = null; // 편집기 위의 마지막 마우스 자리(버튼을 누르지 않았을 때)
@@ -334,7 +335,7 @@ const pressFold = ViewPlugin.fromClass(class {
 	}
 
 	// 누르는 동안: 움직이거나, 스크롤하거나, 창을 벗어나면(Alt+Tab 등: 떼는 신호를 못 받을 수 있다)
-	// 꾹 누르기로 치지 않는다. 그 전에 떼면 onUp
+	// 길게 누르기로 치지 않는다. 그 전에 떼면 onUp
 	track(win: Window, e: MouseEvent, onUp: () => void) {
 		const x = e.clientX, y = e.clientY;
 		const onMove = (m: MouseEvent) => { if (Math.abs(m.clientX - x) > MOVE_SLOP || Math.abs(m.clientY - y) > MOVE_SLOP) this.cancel(); };
@@ -360,8 +361,8 @@ const pressFold = ViewPlugin.fromClass(class {
 		const target = e.target as HTMLElement;
 		// 접기 화살표, 체크박스 같은 위젯은 제 동작에 맡긴다
 		if (target.closest(".cm-foldGutter, .collapse-indicator, .cm-fold-indicator, .cm-foldPlaceholder, input, button")) return;
-		// 글 왼쪽 클릭 = 접기 꺾쇠 단추처럼 그 높이의 줄 접기/펴기만(자식이 없으면 아무 일도 없다).
-		// 글 왼쪽 꾹 누르기 = 그 줄의 부모 접기(부모가 없으면 그 줄).
+		// 글 왼쪽 클릭 = 접기 꺾쇠 버튼처럼 그 높이의 줄 접기/펴기만(자식이 없으면 아무 일도 없다).
+		// 글 왼쪽 길게 누르기 = 그 줄의 부모 접기(부모가 없으면 그 줄).
 		// CodeMirror에 넘기지 않으니 캐럿도 포커스도 그대로고, 드래그 선택도 시작되지 않는다. 움직였다 떼면 아무 일도 없다
 		const local = settings.leftClick ? this.leftRange(e.clientX, e.clientY) : null;
 		if (local) {
@@ -370,7 +371,7 @@ const pressFold = ViewPlugin.fromClass(class {
 			const range = local.range;
 			const win = this.win = this.view.dom.ownerDocument.defaultView || window;
 			this.track(win, e, () => { if (range) this.toggleRange(local.pos, range); });
-			// 꾹 눌러도 접을 것이 없으면 꾹 누르기(게이지도)를 걸지 않는다
+			// 길게 눌러도 접을 것이 없으면 길게 누르기(게이지도)를 걸지 않는다
 			if (!settings.longPress || !this.upTarget(local.pos)) return;
 			this.timer = win.setTimeout(() => {
 				this.timer = null;
@@ -385,7 +386,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
 		if (pos === null) return;
 		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
-		// 움직이거나 떼면 꾹 누르기가 아니다(cancel이 타이머를 푼다)
+		// 움직이거나 떼면 길게 누르기가 아니다(cancel이 타이머를 푼다)
 		this.track(win, e, () => {});
 		const pending = this.toggleTarget(pos);
 		if (!pending) return;
@@ -400,7 +401,7 @@ const pressFold = ViewPlugin.fromClass(class {
 
 	onScroll = () => this.cancel();
 
-	// 꾹 누르기가 된 뒤 손을 뗄 때까지: 마우스 움직임을 CodeMirror의 드래그 선택에 보내지 않고(접히거나 펴져서
+	// 길게 누르기가 된 뒤 손을 뗄 때까지: 마우스 움직임을 CodeMirror의 드래그 선택에 보내지 않고(접히거나 펴져서
 	// 자리가 바뀐 문서에 엉뚱한 범위가 잡힌다), 뗄 때의 클릭도 삼킨다(링크 위였으면 열리지 않게).
 	// 떼는 신호를 놓쳤어도 새로 누르면 이전 누름은 끝난 것이니 바로 푼다(그 클릭은 삼키지 않는다)
 	holdUntilRelease(win: Window) {
@@ -620,7 +621,7 @@ class SettingTab extends PluginSettingTab {
 			({ name: text[key][0], desc: text[key][1], control: { type: "toggle", key } });
 		return [
 			toggle("longPress"),
-			{ name: text.longPressMs[0], desc: text.longPressMs[1], control: { type: "slider", key: "longPressMs", min: 200, max: 1000, step: 50 } },
+			{ name: text.longPressMs, control: { type: "slider", key: "longPressMs", min: 200, max: 1000, step: 50, displayFormat: msLabel } },
 			toggle("headerButtons"),
 			toggle("leftWheel"),
 			toggle("leftClick"),
@@ -650,8 +651,8 @@ class SettingTab extends PluginSettingTab {
 				.onChange(async v => { settings[key] = v; refreshAll(); await this.plugin.saveSettings(); }));
 		toggle("longPress");
 		// 1.13 미만에는 슬라이더 옆에 값이 안 보여서 설명 끝에 붙인다
-		const ms = new Setting(containerEl).setName(text.longPressMs[0]);
-		const showMs = (v: number) => ms.setDesc(`${text.longPressMs[1]} (${v} ms)`);
+		const ms = new Setting(containerEl).setName(text.longPressMs);
+		const showMs = (v: number) => ms.setDesc(msLabel(v));
 		showMs(settings.longPressMs);
 		ms.addSlider(c => c
 			.setLimits(200, 1000, 50)
