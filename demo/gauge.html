@@ -1,0 +1,308 @@
+<!doctype html>
+<!-- 꾹 누르기 게이지의 거리, 크기, 두께, 시간을 눌러 보며 맞추는 로컬 데모. 브라우저로 바로 연다.
+     게이지 코드는 main.ts의 startGauge와 styles.css를 옮겨 온 복사본이라, 플러그인을 바꾸면 여기도 맞춰야 한다. -->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>꾹 누르기 게이지 놀이터</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 레이아웃: 왼쪽은 실제로 눌러 보는 편집기 흉내, 오른쪽(좁으면 아래)은 조절판 */
+:root {
+	--bg: #f6f5fa;
+	--surface: #ffffff;
+	--fg: #23212b;
+	--muted: #6d6979;
+	--line: #e3e0ec;
+	--accent: hsl(258, 70%, 58%);
+	--track: #d9d5e4;
+	--font-body: "IBM Plex Sans KR", "Malgun Gothic", system-ui, sans-serif;
+	--font-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) {
+		--bg: #17161c; --surface: #1f1e26; --fg: #e8e6ef; --muted: #9a96a8;
+		--line: #33313d; --accent: hsl(258, 85%, 72%); --track: #3d3a49; color-scheme: dark;
+	}
+}
+:root[data-theme="dark"] {
+	--bg: #17161c; --surface: #1f1e26; --fg: #e8e6ef; --muted: #9a96a8;
+	--line: #33313d; --accent: hsl(258, 85%, 72%); --track: #3d3a49; color-scheme: dark;
+}
+body {
+	margin: 0;
+	background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.6;
+	padding-left: max(16px, env(safe-area-inset-left, 0px));
+	padding-right: max(16px, env(safe-area-inset-right, 0px));
+	padding-block: 32px 48px;
+}
+.wrap { max-width: 980px; margin: 0 auto; display: grid; gap: 20px; }
+h1 { font-size: 22px; margin: 0; font-weight: 600; text-wrap: balance; }
+.lede { margin: 4px 0 0; color: var(--muted); max-width: 65ch; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px; align-items: start; }
+@media (max-width: 760px) { .main { grid-template-columns: minmax(0, 1fr); } }
+
+/* 편집기 흉내 */
+.editor {
+	background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+	padding-block: 20px; user-select: none; -webkit-user-select: none; touch-action: none;
+}
+.row { display: flex; align-items: baseline; min-height: 28px; }
+.gutter { flex: 0 0 auto; cursor: default; display: flex; justify-content: flex-end; align-items: center; padding-right: 6px; color: var(--muted); font-size: 11px; }
+.text { flex: 1 1 auto; min-width: 0; cursor: text; padding-right: 20px; }
+.row.has-kids .text::after { content: " …"; color: var(--muted); opacity: 0; }
+.row.has-kids.folded .text::after { opacity: 1; }
+.row[hidden] { display: none; }
+.bullet { color: var(--muted); margin-right: 8px; }
+.row.h .text { font-weight: 600; font-size: 17px; }
+.hint { color: var(--muted); font-size: 13px; margin: 0; padding-inline: 20px; padding-top: 12px; border-top: 1px dashed var(--line); margin-top: 12px; }
+
+/* 조절판 */
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: grid; gap: 16px; }
+.field { display: grid; gap: 4px; }
+.field label { display: flex; justify-content: space-between; font-size: 13px; }
+.field output { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+.field small { color: var(--muted); font-size: 12px; line-height: 1.4; }
+input[type="range"] { width: 100%; accent-color: var(--accent); }
+.presets { display: flex; flex-wrap: wrap; gap: 8px; }
+button {
+	font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+	border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+}
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.label { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0; }
+
+/* 플러그인 styles.css와 같은 게이지 */
+.editor-uxfix-gauge { position: fixed; pointer-events: none; z-index: 10; }
+.editor-uxfix-gauge svg { width: 100%; height: 100%; overflow: visible; display: block; }
+.editor-uxfix-gauge path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.editor-uxfix-gauge-track { stroke: var(--track); }
+.editor-uxfix-gauge-bar {
+	stroke: var(--accent); stroke-dasharray: 1;
+	animation: editor-uxfix-gauge-fill var(--editor-uxfix-gauge-time) linear forwards;
+}
+@keyframes editor-uxfix-gauge-fill {
+	from { stroke-dashoffset: var(--editor-uxfix-gauge-start); }
+	to { stroke-dashoffset: 0; }
+}
+@media (prefers-reduced-motion: reduce) { .editor-uxfix-gauge-bar { animation-timing-function: steps(4); } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+	<header>
+		<h1>꾹 누르기 게이지 놀이터</h1>
+		<p class="lede">아래 목록의 줄을 마우스로 꾹 눌러 보세요. 플러그인과 같은 꺾쇠 게이지가 커서 옆에 뜨고, 다 차면 그 줄이 접히거나 펴져요. 글 왼쪽 여백에서는 화살표 커서, 글 위에서는 I빔 커서로 눌러 볼 수 있어요.</p>
+	</header>
+
+	<div class="main">
+		<section class="editor" id="editor" aria-label="눌러 보는 목록"></section>
+
+		<aside class="panel" aria-label="게이지 조절">
+			<div>
+				<p class="label">미리 맞춘 값</p>
+				<div class="presets" style="margin-top:8px">
+					<button type="button" id="p-now" aria-pressed="true">지금</button>
+					<button type="button" id="p-side" aria-pressed="false">오른쪽 옆 (+13, +7)</button>
+					<button type="button" id="p-prev" aria-pressed="false">이전 (dd75910)</button>
+				</div>
+			</div>
+			<div class="field">
+				<label for="offset-x">오른쪽 거리 <output id="offset-x-out"></output></label>
+				<input type="range" id="offset-x" min="0" max="24" step="1">
+			</div>
+			<div class="field">
+				<label for="offset-y">아래쪽 거리 <output id="offset-y-out"></output></label>
+				<input type="range" id="offset-y" min="0" max="24" step="1">
+				<small>커서 끝점에서 보이는 선이 시작하는 곳까지(px)</small>
+			</div>
+			<div class="field">
+				<label for="size">크기 <output id="size-out"></output></label>
+				<input type="range" id="size" min="10" max="32" step="1">
+				<small>꺾쇠 전체 높이(px). 폭은 비율대로 따라가요</small>
+			</div>
+			<div class="field">
+				<label for="stroke">선 두께 <output id="stroke-out"></output></label>
+				<input type="range" id="stroke" min="1.25" max="3.5" step="0.25">
+			</div>
+			<div class="field">
+				<label for="ms">꾹 누르기 시간 <output id="ms-out"></output></label>
+				<input type="range" id="ms" min="200" max="1200" step="50">
+				<small>앞의 120ms는 게이지 없이 기다려요(짧은 클릭에는 안 보이게)</small>
+			</div>
+		</aside>
+	</div>
+</div>
+
+<script>
+const GAUGE_DELAY = 120;
+const PRESETS = {
+	now: { offsetX: 10, offsetY: 10, size: 16, stroke: 2.75 },
+	side: { offsetX: 13, offsetY: 7, size: 18, stroke: 2.25 },
+	// 이전: 24px 상자를 +14에 두고 선은 상자 안 (5,3)부터 → 보이는 선은 대략 +19, +17
+	prev: { offsetX: 14, offsetY: 14, size: 18, stroke: 2.5, legacy: true },
+};
+const state = { offsetX: 10, offsetY: 10, size: 16, stroke: 2.75, ms: 400, legacy: false };
+
+// 접고 펼 수 있는 목록. depth로 자식을 정한다
+const ITEMS = [
+	[0, "주간 회의 메모", true],
+	[1, "지난주 한 일"],
+	[2, "접기 게이지를 꺾쇠로 바꿈"],
+	[2, "꾹 누르기 시간 설정 추가"],
+	[1, "이번 주 할 일"],
+	[2, "커뮤니티 플러그인 심사 대응"],
+	[3, "README 스크린샷 다시 찍기"],
+	[3, "설정 문구 다듬기"],
+	[2, "게이지 위치 실제 사용감 확인"],
+	[1, "결정할 것"],
+	[2, "게이지 두께 2.25로 갈지"],
+];
+const editor = document.getElementById("editor");
+const rows = ITEMS.map(([depth, text, heading], i) => {
+	const row = document.createElement("div");
+	row.className = "row" + (heading ? " h" : "");
+	row.dataset.depth = depth;
+	const g = document.createElement("div");
+	g.className = "gutter";
+	g.style.width = `${28 + depth * 22}px`;
+	const t = document.createElement("div");
+	t.className = "text";
+	t.innerHTML = (heading ? "" : '<span class="bullet">•</span>') + text;
+	row.append(g, t);
+	editor.appendChild(row);
+	return row;
+});
+rows.forEach((r, i) => { if (rows[i + 1] && +rows[i + 1].dataset.depth > +r.dataset.depth) r.classList.add("has-kids"); });
+const hint = document.createElement("p");
+hint.className = "hint";
+hint.textContent = "자식이 없는 줄을 누르면 그 줄을 품은 부모가 접혀요. 누른 채 움직이면 취소돼요.";
+editor.appendChild(hint);
+
+function children(i) {
+	const d = +rows[i].dataset.depth, out = [];
+	for (let j = i + 1; j < rows.length && +rows[j].dataset.depth > d; j++) out.push(j);
+	return out;
+}
+function target(i) {
+	if (rows[i].classList.contains("has-kids")) return i;
+	const d = +rows[i].dataset.depth;
+	for (let j = i - 1; j >= 0; j--) if (+rows[j].dataset.depth < d) return j;
+	return null;
+}
+function setFolded(i, folded) {
+	rows[i].classList.toggle("folded", folded);
+	const kids = children(i);
+	let hideBelow = Infinity;
+	for (const j of kids) {
+		const d = +rows[j].dataset.depth;
+		if (d > hideBelow) { rows[j].hidden = true; continue; }
+		hideBelow = Infinity;
+		rows[j].hidden = folded;
+		if (!folded && rows[j].classList.contains("folded")) hideBelow = d;
+	}
+}
+
+// 게이지: 플러그인 startGauge와 같은 구조
+let gauge = null, gaugeTimer = null, pressTimer = null, start = null;
+const NS = "http://www.w3.org/2000/svg";
+function startGauge(x, y, action) {
+	gaugeTimer = setTimeout(() => {
+		gaugeTimer = null;
+		const el = document.createElement("div");
+		el.className = "editor-uxfix-gauge";
+		el.setAttribute("aria-hidden", "true");
+		const svg = document.createElementNS(NS, "svg");
+		// 꺾쇠 높이 18이 원래 크기. 선 두께는 크기와 따로 보이게 배율만큼 되돌린다
+		const scale = state.size / 18;
+		let paths;
+		if (state.legacy) {
+			el.style.width = el.style.height = `${24 * scale}px`;
+			svg.setAttribute("viewBox", "0 0 24 24");
+			paths = action === "unfold"
+				? ["M 5 9 L 12 3", "M 19 9 L 12 3", "M 5 15 L 12 21", "M 19 15 L 12 21"]
+				: ["M 5 3 L 12 9", "M 19 3 L 12 9", "M 5 21 L 12 15", "M 19 21 L 12 15"];
+		} else {
+			el.style.width = `${16 * scale}px`; el.style.height = `${20 * scale}px`;
+			svg.setAttribute("viewBox", "-1 -1 16 20");
+			paths = action === "unfold"
+				? ["M 0 6 L 7 0", "M 14 6 L 7 0", "M 0 12 L 7 18", "M 14 12 L 7 18"]
+				: ["M 0 0 L 7 6", "M 14 0 L 7 6", "M 0 18 L 7 12", "M 14 18 L 7 12"];
+		}
+		el.style.left = `${x + state.offsetX}px`;
+		el.style.top = `${y + state.offsetY}px`;
+		el.style.setProperty("--editor-uxfix-gauge-start", String(1 - GAUGE_DELAY / state.ms));
+		el.style.setProperty("--editor-uxfix-gauge-time", `${state.ms - GAUGE_DELAY}ms`);
+		for (const cls of ["editor-uxfix-gauge-track", "editor-uxfix-gauge-bar"]) {
+			for (const d of paths) {
+				const p = document.createElementNS(NS, "path");
+				p.setAttribute("d", d); p.setAttribute("pathLength", "1"); p.setAttribute("class", cls);
+				p.style.strokeWidth = state.stroke / scale;
+				svg.appendChild(p);
+			}
+		}
+		el.appendChild(svg);
+		document.body.appendChild(el);
+		gauge = el;
+	}, GAUGE_DELAY);
+}
+function cancel() {
+	clearTimeout(gaugeTimer); gaugeTimer = null;
+	clearTimeout(pressTimer); pressTimer = null;
+	if (gauge) { gauge.remove(); gauge = null; }
+	start = null;
+}
+
+editor.addEventListener("pointerdown", e => {
+	if (e.button !== 0) return;
+	const row = e.target.closest(".row");
+	if (!row) return;
+	const i = target(rows.indexOf(row));
+	if (i === null) return;
+	const folded = rows[i].classList.contains("folded");
+	start = { x: e.clientX, y: e.clientY };
+	pressTimer = setTimeout(() => { cancel(); setFolded(i, !folded); }, state.ms);
+	startGauge(e.clientX, e.clientY, folded ? "unfold" : "fold");
+});
+addEventListener("pointermove", e => {
+	if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) cancel();
+});
+addEventListener("pointerup", cancel);
+addEventListener("pointercancel", cancel);
+addEventListener("scroll", cancel, { passive: true });
+
+// 조절판
+const inputs = {
+	offsetX: [document.getElementById("offset-x"), document.getElementById("offset-x-out"), v => `+${v}px`],
+	offsetY: [document.getElementById("offset-y"), document.getElementById("offset-y-out"), v => `+${v}px`],
+	size: [document.getElementById("size"), document.getElementById("size-out"), v => `${v}px`],
+	stroke: [document.getElementById("stroke"), document.getElementById("stroke-out"), v => `${v}`],
+	ms: [document.getElementById("ms"), document.getElementById("ms-out"), v => `${v}ms`],
+};
+const buttons = { now: document.getElementById("p-now"), side: document.getElementById("p-side"), prev: document.getElementById("p-prev") };
+function render() {
+	for (const [k, [inp, out, fmt]] of Object.entries(inputs)) { inp.value = state[k]; out.textContent = fmt(state[k]); }
+	// 이전 값은 상자 안 여백 때문에 실제 거리가 더 멀다
+	if (state.legacy) {
+		inputs.offsetX[1].textContent = `+${state.offsetX}px (실제 선은 +19)`;
+		inputs.offsetY[1].textContent = `+${state.offsetY}px (실제 선은 +17)`;
+	}
+	for (const [k, btn] of Object.entries(buttons)) {
+		const p = PRESETS[k];
+		const on = !!p.legacy === state.legacy && p.offsetX === state.offsetX && p.offsetY === state.offsetY && p.size === state.size && p.stroke === state.stroke;
+		btn.setAttribute("aria-pressed", String(on));
+	}
+}
+for (const [k, [inp]] of Object.entries(inputs)) {
+	inp.addEventListener("input", () => { state[k] = +inp.value; if (k !== "ms") state.legacy = false; render(); });
+}
+for (const [k, btn] of Object.entries(buttons)) {
+	btn.addEventListener("click", () => { Object.assign(state, { legacy: false }, PRESETS[k]); render(); });
+}
+render();
+</script>
+</body>
+</html>
