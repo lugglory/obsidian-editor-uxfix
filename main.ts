@@ -14,7 +14,7 @@ interface Settings {
 	longPressMs: number;  // 꾹 누르기로 치는 시간(ms)
 	clickToggle: boolean; // 캐럿 자리 클릭 = 그 줄 접기/펴기
 	headerButtons: boolean; // 편집기 위쪽 줄의 끝까지 펴기/접기 버튼
-	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠 = 그 줄을 한 단계씩 펴기/접기
+	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호)에서 휠 = 그 줄을 한 단계씩 펴기/접기
 	leftClick: boolean;     // 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기(꺾쇠 단추처럼, 캐럿은 그대로)
 }
 
@@ -46,7 +46,7 @@ const STRINGS = {
 		headerButtons: ["Fold all / unfold all buttons",
 			"Adds fold-all and unfold-all buttons to the view header (next to the reading view toggle). Fold all folds every level, hidden ones included. A button is dimmed when there is nothing to do."],
 		leftWheel: ["Wheel left of text folds step by step",
-			"Wheeling left of the text (margin, indentation, list markers, numbers, heading #) unfolds (up) or folds (down) that line and its children one level per notch, and doesn't scroll there. Nothing happens on a line with no children. The line under the mouse stays in place. While this or Click left of text is on, hovering there tints the line and its children and shows a pointer cursor."],
+			"Wheeling left of the text (margin, indentation, list markers, numbers; on a heading, only the margin, not the #) unfolds (up) or folds (down) that line and its children one level per notch, and doesn't scroll there. Nothing happens on a line with no children. The line under the mouse stays in place. While this or Click left of text is on, hovering there tints the line and its children and shows a pointer cursor."],
 		leftClick: ["Click left of text to fold",
 			"Clicking left of the text folds or unfolds that line, like the fold chevron: the caret and focus stay put, and nothing happens on a line with no children. No drag selection starts there."],
 	},
@@ -61,7 +61,7 @@ const STRINGS = {
 		headerButtons: ["끝까지 펴기/접기 버튼",
 			"편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 끝까지 접기, 끝까지 펴기 버튼을 둔다. 끝까지 접기는 숨은 안쪽까지 모두 접는다. 누를 수 없는 버튼은 흐리게 한다."],
 		leftWheel: ["글 왼쪽에서 휠로 그 줄 단계별 접기/펴기",
-			"글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호, 제목 #)에서 휠을 굴리면 그 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 그곳에서는 스크롤되지 않고, 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다. 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 그곳에 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다."],
+			"글보다 왼쪽(왼쪽 여백, 들여쓰기, 목록 기호, 번호. 제목은 # 말고 그 왼쪽 여백만)에서 휠을 굴리면 그 줄과 그 안을 한 칸마다 한 단계씩 편다(위로) 또는 접는다(아래로). 그곳에서는 스크롤되지 않고, 자식이 없는 줄이면 아무 일도 없다. 마우스가 가리키는 줄은 제자리에 남는다. 이 설정이나 글 왼쪽 클릭이 켜져 있으면, 그곳에 마우스를 올린 줄과 그 안을 옅게 칠하고 커서를 손가락 모양으로 바꾼다."],
 		leftClick: ["글 왼쪽 클릭으로 그 줄 접기/펴기",
 			"글보다 왼쪽을 클릭하면 접기 꺾쇠 단추처럼 그 줄을 접거나 편다. 캐럿과 포커스는 그대로이고, 자식이 없는 줄이면 아무 일도 없다. 그곳에서는 드래그 선택이 시작되지 않는다."],
 	},
@@ -461,7 +461,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		if (own) this.step([own], open);
 	}
 
-	// 마우스가 글 왼쪽(편집기 왼쪽 여백, 들여쓰기, 목록 기호, 번호, 체크박스, 제목 #)에 있으면 그 높이의 줄과 그 줄을 접는 범위.
+	// 마우스가 글 왼쪽(편집기 왼쪽 여백, 들여쓰기, 목록 기호, 번호, 체크박스. 제목의 #는 빼서 그 자리를 클릭하면 캐럿이 놓인다)에 있으면 그 높이의 줄과 그 줄을 접는 범위.
 	// 자식이 없는 줄이면 range가 null이다(그래도 글 왼쪽이니 휠은 스크롤하지 않는다)
 	leftRange(x: number, y: number): { pos: number; line: Line; range: Range | null } | null {
 		const { view } = this;
@@ -471,7 +471,7 @@ const pressFold = ViewPlugin.fromClass(class {
 		const pos = view.posAtCoords({ x: Math.max(x, contentLeft + 1), y });
 		if (pos === null) return null;
 		const line = visibleLine(state, pos);
-		const lead = /^\s*((?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?|#{1,6}\s+)?/.exec(line.text)!;
+		const lead = /^\s*((?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?)?/.exec(line.text)!;
 		const text = view.coordsAtPos(line.from + lead[0].length);
 		if (!text || x >= text.left) return null;
 		return { pos, line, range: ownFold(state, line.from) };
