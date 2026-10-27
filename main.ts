@@ -250,18 +250,18 @@ const pressFold = ViewPlugin.fromClass(class {
 			el.setAttribute("aria-hidden", "true");
 			el.dataset.action = action;
 			el.setCssProps({
-				// 화살표 커서 몸통은 비키되 커서에 붙은 표시로 보이게, 선이 끝점에서 12px 떨어진 곳부터 그려지게 둔다
-				left: `${x + 12}px`,
-				top: `${y + 12}px`,
+				// 화살표 커서 몸통은 비키되 커서에 붙은 표시로 보이게, 선이 끝점에서 10px 떨어진 곳부터 그려지게 둔다
+				left: `${x + 10}px`,
+				top: `${y + 10}px`,
 				"--editor-uxfix-gauge-start": String(1 - GAUGE_DELAY / settings.longPressMs),
 				"--editor-uxfix-gauge-time": `${settings.longPressMs - GAUGE_DELAY}ms`,
 			});
 			const svg = doc.createElementNS(ns, "svg");
-			svg.setAttribute("viewBox", "-1 -1 16 20");
+			svg.setAttribute("viewBox", "-1.5 -1.5 15.5 19");
 			// 꺾쇠의 양 끝에서 꼭짓점으로 동시에 채워 방향을 드러낸다.
 			const paths = action === "unfold"
-				? ["M 0 6 L 7 0", "M 14 6 L 7 0", "M 0 12 L 7 18", "M 14 12 L 7 18"]
-				: ["M 0 0 L 7 6", "M 14 0 L 7 6", "M 0 18 L 7 12", "M 14 18 L 7 12"];
+				? ["M 0 5.33 L 6.25 0", "M 12.5 5.33 L 6.25 0", "M 0 10.67 L 6.25 16", "M 12.5 10.67 L 6.25 16"]
+				: ["M 0 0 L 6.25 5.33", "M 12.5 0 L 6.25 5.33", "M 0 16 L 6.25 10.67", "M 12.5 16 L 6.25 10.67"];
 			for (const cls of ["editor-uxfix-gauge-track", "editor-uxfix-gauge-bar"]) {
 				for (const d of paths) {
 					const path = doc.createElementNS(ns, "path");

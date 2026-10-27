@@ -18,8 +18,8 @@
 /* Long-press chevrons: outward to unfold, inward to fold */
 .editor-uxfix-gauge {
 	position: fixed;
-	width: 16px;
-	height: 20px;
+	width: 15.5px;
+	height: 19px;
 	pointer-events: none;
 	z-index: var(--layer-tooltip);
 }
@@ -32,7 +32,7 @@
 
 .editor-uxfix-gauge path {
 	fill: none;
-	stroke-width: 2.25;
+	stroke-width: 2.75;
 	stroke-linecap: round;
 	stroke-linejoin: round;
 }
