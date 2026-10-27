@@ -12,16 +12,15 @@ const WHEEL_IDLE = 300; // 이만큼(ms) 휠이 멈추면 덜 찬 양을 버린�
 interface Settings {
 	longPress: boolean;   // 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기)
 	longPressMs: number;  // 꾹 누르기로 치는 시간(ms)
-	clickToggle: boolean; // 캐럿 자리 클릭 = 그 줄 접기/펴기
 	headerButtons: boolean; // 편집기 위쪽 줄의 끝까지 펴기/접기 버튼
 	leftWheel: boolean;     // 글 왼쪽(여백, 들여쓰기, 목록 기호, 번호)에서 휠 = 그 줄을 한 단계씩 펴기/접기
 	leftClick: boolean;     // 글 왼쪽 클릭 = 그 높이의 줄 접기/펴기(꺾쇠 단추처럼, 캐럿은 그대로)
 }
 
-const DEFAULT_SETTINGS: Settings = { longPress: true, longPressMs: 400, clickToggle: true, headerButtons: true, leftWheel: true, leftClick: true };
+const DEFAULT_SETTINGS: Settings = { longPress: true, longPressMs: 400, headerButtons: true, leftWheel: true, leftClick: true };
 
 type BoolKey = Exclude<keyof Settings, "longPressMs">;
-const BOOL_KEYS: BoolKey[] = ["longPress", "clickToggle", "headerButtons", "leftWheel", "leftClick"];
+const BOOL_KEYS: BoolKey[] = ["longPress", "headerButtons", "leftWheel", "leftClick"];
 const clampMs = (v: number) => Math.min(1000, Math.max(200, v));
 
 // 편집기 확장들이 이벤트 때마다 읽는다: 설정을 바꾸면 바로 적용된다
@@ -41,8 +40,6 @@ const STRINGS = {
 		longPress: ["Long-press to fold",
 			"Hold a line to fold or unfold it. On a line with no children, its parent (list item or heading) folds. Left of the text (with Click left of text on), the parent folds even if the line has children. Directional chevrons next to the mouse fill up while you hold: outward to unfold, inward to fold."],
 		longPressMs: ["Long-press time", "How long to hold, in milliseconds, before a press counts as a long-press."],
-		clickToggle: ["Click the caret spot to fold",
-			"Clicking exactly where the caret already is folds or unfolds that line."],
 		headerButtons: ["Fold all / unfold all buttons",
 			"Adds fold-all and unfold-all buttons to the view header (next to the reading view toggle). Fold all folds every level, hidden ones included. A button is dimmed when there is nothing to do."],
 		leftWheel: ["Wheel left of text folds step by step",
@@ -56,8 +53,6 @@ const STRINGS = {
 		longPress: ["꾹 누르기로 접기/펴기",
 			"줄을 꾹 누르면 그 줄을 접거나 편다. 자식이 없는 줄이면 그 줄을 품은 부모 항목이나 제목을 접는다. 글 왼쪽(글 왼쪽 클릭이 켜져 있을 때)을 꾹 누르면 자식이 있어도 부모를 접는다. 누르는 동안 마우스 옆에 꺾쇠 게이지가 차오른다. 펼 때는 바깥쪽, 접을 때는 가운데를 향한다."],
 		longPressMs: ["꾹 누르기 시간", "이만큼(밀리초) 누르고 있어야 꾹 누르기로 친다."],
-		clickToggle: ["캐럿 자리 클릭으로 접기/펴기",
-			"캐럿이 있는 바로 그 자리를 클릭하면 그 줄을 접거나 편다."],
 		headerButtons: ["끝까지 펴기/접기 버튼",
 			"편집기 위쪽(읽기 모드 전환 버튼이 있는 줄)에 끝까지 접기, 끝까지 펴기 버튼을 둔다. 끝까지 접기는 숨은 안쪽까지 모두 접는다. 누를 수 없는 버튼은 흐리게 한다."],
 		leftWheel: ["글 왼쪽에서 휠로 그 줄 단계별 접기/펴기",
@@ -144,7 +139,7 @@ function visibleTree(state: EditorState, roots: Range[]): Node[] {
 	return out;
 }
 
-// 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기). 캐럿을 옮기지 않은 짧은 클릭 = 그 줄 접기/펴기.
+// 꾹 누르기 = 그 줄 접기/펴기(자식이 없으면 부모 접기).
 // 글 왼쪽 휠 = 그 높이의 줄과 그 안을 휠 한 칸마다 한 단계씩 펴기(위로)/접기(아래로). 마우스 자리의 줄은 제자리에 둔다. 자식이 없는 줄이면 아무 일도 없다.
 // 편집기 위쪽 줄의 버튼 = 문서 전체를 끝까지 펴기/접기. 누를 수 없는 버튼은 흐리게 한다
 const pressFold = ViewPlugin.fromClass(class {
@@ -386,17 +381,12 @@ const pressFold = ViewPlugin.fromClass(class {
 			this.startGauge(win, e.clientX, e.clientY, "fold");
 			return;
 		}
+		if (!settings.longPress) return;
 		const pos = this.view.posAtCoords({ x: e.clientX, y: e.clientY });
 		if (pos === null) return;
-		// 편집기에 포커스가 있고 캐럿이 바로 그 자리: 캐럿이 옮겨지지 않는 클릭
-		// (포커스가 없을 때의 클릭은 편집기로 돌아오는 클릭이라 치지 않는다)
-		const sel = this.view.state.selection.main;
-		const inPlace = settings.clickToggle && this.view.hasFocus && sel.empty && sel.head === pos && e.detail === 1;
-		if (!settings.longPress && !inPlace) return;
 		const win = this.win = this.view.dom.ownerDocument.defaultView || window;
-		// 여기까지 오면 움직이지 않고 뗀 것이다(움직이거나 꾹 누르기가 되면 cancel이 이 리스너를 뗀다)
-		this.track(win, e, () => { if (inPlace) this.toggle(pos, false); });
-		if (!settings.longPress) return;
+		// 움직이거나 떼면 꾹 누르기가 아니다(cancel이 타이머를 푼다)
+		this.track(win, e, () => {});
 		const pending = this.toggleTarget(pos, true);
 		if (!pending) return;
 		this.timer = win.setTimeout(() => {
@@ -631,7 +621,6 @@ class SettingTab extends PluginSettingTab {
 		return [
 			toggle("longPress"),
 			{ name: text.longPressMs[0], desc: text.longPressMs[1], control: { type: "slider", key: "longPressMs", min: 200, max: 1000, step: 50 } },
-			toggle("clickToggle"),
 			toggle("headerButtons"),
 			toggle("leftWheel"),
 			toggle("leftClick"),
@@ -668,7 +657,6 @@ class SettingTab extends PluginSettingTab {
 			.setLimits(200, 1000, 50)
 			.setValue(settings.longPressMs)
 			.onChange(async v => { settings.longPressMs = v; showMs(v); await this.plugin.saveSettings(); }));
-		toggle("clickToggle");
 		toggle("headerButtons");
 		toggle("leftWheel");
 		toggle("leftClick");
