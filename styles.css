@@ -49,7 +49,7 @@
 
 @keyframes editor-uxfix-gauge-fill {
 	from {
-		stroke-dashoffset: var(--editor-uxfix-gauge-start);
+		stroke-dashoffset: 1;
 	}
 	to {
 		stroke-dashoffset: 0;

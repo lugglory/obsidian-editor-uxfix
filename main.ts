@@ -242,11 +242,11 @@ const pressFold = ViewPlugin.fromClass(class {
 		this.stopGauge();
 	}
 
-	// 펼 때는 바깥쪽, 접을 때는 안쪽을 향해 차오르는 꺾쇠 게이지를 마우스 오른쪽 아래에 띄운다. 짧은 클릭에는 안 보이게 조금 뒤에, 그만큼 찬 채로 띄운다
+	// 펼 때는 바깥쪽, 접을 때는 안쪽을 향해 차오르는 꺾쇠 게이지를 마우스 오른쪽 아래에 띄운다. 짧은 클릭에는 안 보이게 조금 뒤에 빈 채로 띄워 남은 시간 동안 채운다
 	startGauge(win: Window, x: number, y: number, action: "fold" | "unfold") {
 		this.gaugeTimer = win.setTimeout(() => {
 			this.gaugeTimer = null;
-			// 모양과 차오르는 애니메이션은 styles.css. 여기서는 동작에 맞는 경로, 자리, 시작 양, 걸리는 시간을 넘긴다
+			// 모양과 차오르는 애니메이션은 styles.css. 여기서는 동작에 맞는 경로, 자리, 걸리는 시간을 넘긴다
 			const doc = win.document, ns = "http://www.w3.org/2000/svg";
 			const el = doc.body.createDiv({ cls: "editor-uxfix-gauge" });
 			el.setAttribute("aria-hidden", "true");
@@ -255,7 +255,6 @@ const pressFold = ViewPlugin.fromClass(class {
 				// 화살표 커서 몸통은 비키되 커서에 붙은 표시로 보이게, 선이 끝점에서 10px 떨어진 곳부터 그려지게 둔다
 				left: `${x + 10}px`,
 				top: `${y + 10}px`,
-				"--editor-uxfix-gauge-start": String(1 - GAUGE_DELAY / settings.longPressMs),
 				"--editor-uxfix-gauge-time": `${settings.longPressMs - GAUGE_DELAY}ms`,
 			});
 			const svg = doc.createElementNS(ns, "svg");

@@ -84,7 +84,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 	animation: editor-uxfix-gauge-fill var(--editor-uxfix-gauge-time) linear forwards;
 }
 @keyframes editor-uxfix-gauge-fill {
-	from { stroke-dashoffset: var(--editor-uxfix-gauge-start); }
+	from { stroke-dashoffset: 1; }
 	to { stroke-dashoffset: 0; }
 }
 @media (prefers-reduced-motion: reduce) { .editor-uxfix-gauge-bar { animation-timing-function: steps(4); } }
@@ -234,7 +234,6 @@ function startGauge(x, y, action) {
 		}
 		el.style.left = `${x + state.offsetX}px`;
 		el.style.top = `${y + state.offsetY}px`;
-		el.style.setProperty("--editor-uxfix-gauge-start", String(1 - GAUGE_DELAY / state.ms));
 		el.style.setProperty("--editor-uxfix-gauge-time", `${state.ms - GAUGE_DELAY}ms`);
 		for (const cls of ["editor-uxfix-gauge-track", "editor-uxfix-gauge-bar"]) {
 			for (const d of paths) {
