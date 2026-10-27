@@ -662,13 +662,14 @@ class SettingTab extends PluginSettingTab {
 				.setValue(settings[key])
 				.onChange(async v => { settings[key] = v; refreshAll(); await this.plugin.saveSettings(); }));
 		toggle("longPress");
-		new Setting(containerEl).setName(text.longPressMs[0]).setDesc(text.longPressMs[1]).addSlider(c => c
+		// 1.13 미만에는 슬라이더 옆에 값이 안 보여서 설명 끝에 붙인다
+		const ms = new Setting(containerEl).setName(text.longPressMs[0]);
+		const showMs = (v: number) => ms.setDesc(`${text.longPressMs[1]} (${v} ms)`);
+		showMs(settings.longPressMs);
+		ms.addSlider(c => c
 			.setLimits(200, 1000, 50)
 			.setValue(settings.longPressMs)
-			// 1.13 미만에는 슬라이더 옆에 값이 안 보여서 툴팁으로 보여 준다
-			// eslint-disable-next-line @typescript-eslint/no-deprecated
-			.setDynamicTooltip()
-			.onChange(async v => { settings.longPressMs = v; await this.plugin.saveSettings(); }));
+			.onChange(async v => { settings.longPressMs = v; showMs(v); await this.plugin.saveSettings(); }));
 		toggle("clickToggle");
 		toggle("headerButtons");
 		toggle("leftWheel");
