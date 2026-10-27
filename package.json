@@ -1,6 +1,6 @@
 {
   "name": "obsidian-editor-uxfix",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Fold and unfold lines with long-press, clicks, and the mouse wheel, keeping the line under the mouse in place",
   "main": "main.js",
   "scripts": {

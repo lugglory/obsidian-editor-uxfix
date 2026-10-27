@@ -1,4 +1,4 @@
-import { App, MarkdownView, Plugin, PluginSettingTab, Setting, editorInfoField, moment } from "obsidian";
+import { App, MarkdownView, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, editorInfoField, moment } from "obsidian";
 import { EditorState, Line, RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { foldable, foldEffect, foldedRanges, unfoldEffect } from "@codemirror/language";
@@ -21,6 +21,8 @@ interface Settings {
 const DEFAULT_SETTINGS: Settings = { longPress: true, longPressMs: 400, clickToggle: true, headerButtons: true, leftWheel: true, leftClick: true };
 
 type BoolKey = Exclude<keyof Settings, "longPressMs">;
+const BOOL_KEYS: BoolKey[] = ["longPress", "clickToggle", "headerButtons", "leftWheel", "leftClick"];
+const clampMs = (v: number) => Math.min(1000, Math.max(200, v));
 
 // 편집기 확장들이 이벤트 때마다 읽는다: 설정을 바꾸면 바로 적용된다
 const settings: Settings = { ...DEFAULT_SETTINGS };
@@ -604,11 +606,13 @@ const pressFold = ViewPlugin.fromClass(class {
 export default class EditorUxfixPlugin extends Plugin {
 	async onload() {
 		// 없어진 설정 항목이 남아 있어도 읽지 않는다
-		const saved = (await this.loadData()) || {};
-		for (const key of Object.keys(DEFAULT_SETTINGS) as BoolKey[]) {
-			if (typeof saved[key] === "boolean" && typeof DEFAULT_SETTINGS[key] === "boolean") settings[key] = saved[key];
+		const data: unknown = await this.loadData();
+		const saved = (typeof data === "object" && data !== null ? data : {}) as Partial<Record<keyof Settings, unknown>>;
+		for (const key of BOOL_KEYS) {
+			const v = saved[key];
+			if (typeof v === "boolean") settings[key] = v;
 		}
-		if (typeof saved.longPressMs === "number") settings.longPressMs = Math.min(1000, Math.max(200, saved.longPressMs));
+		if (typeof saved.longPressMs === "number") settings.longPressMs = clampMs(saved.longPressMs);
 		this.addSettingTab(new SettingTab(this.app, this));
 		this.registerEditorExtension([hoverField, pressFold]);
 		// 읽기 모드로 바꾸면 버튼을 감춘다
@@ -621,6 +625,34 @@ export default class EditorUxfixPlugin extends Plugin {
 class SettingTab extends PluginSettingTab {
 	constructor(app: App, readonly plugin: EditorUxfixPlugin) { super(app, plugin); }
 
+	// 1.13 이상: 선언형으로 그려서 설정 검색에도 잡힌다. 값은 아래 getControlValue/setControlValue로 settings와 주고받는다
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		const text = t();
+		const toggle = (key: BoolKey): SettingDefinitionItem =>
+			({ name: text[key][0], desc: text[key][1], control: { type: "toggle", key } });
+		return [
+			toggle("longPress"),
+			{ name: text.longPressMs[0], desc: text.longPressMs[1], control: { type: "slider", key: "longPressMs", min: 200, max: 1000, step: 50 } },
+			toggle("clickToggle"),
+			toggle("headerButtons"),
+			toggle("leftWheel"),
+			toggle("leftClick"),
+		];
+	}
+
+	getControlValue(key: string): unknown {
+		return key in settings ? settings[key as keyof Settings] : undefined;
+	}
+
+	async setControlValue(key: string, value: unknown) {
+		if (key === "longPressMs" && typeof value === "number") settings.longPressMs = clampMs(value);
+		else if ((BOOL_KEYS as string[]).includes(key) && typeof value === "boolean") settings[key as BoolKey] = value;
+		else return;
+		refreshAll();
+		await this.plugin.saveSettings();
+	}
+
+	// 1.13 미만에서만 불린다(1.13 이상은 위 정의로 그린다)
 	display() {
 		const { containerEl } = this;
 		containerEl.empty();
@@ -633,6 +665,8 @@ class SettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName(text.longPressMs[0]).setDesc(text.longPressMs[1]).addSlider(c => c
 			.setLimits(200, 1000, 50)
 			.setValue(settings.longPressMs)
+			// 1.13 미만에는 슬라이더 옆에 값이 안 보여서 툴팁으로 보여 준다
+			// eslint-disable-next-line @typescript-eslint/no-deprecated
 			.setDynamicTooltip()
 			.onChange(async v => { settings.longPressMs = v; await this.plugin.saveSettings(); }));
 		toggle("clickToggle");
